@@ -1,4 +1,4 @@
-[project]
+git[project]
 name = "rord-layout-recognation"
 version = "0.1.0"
 description = "Add your description here"
