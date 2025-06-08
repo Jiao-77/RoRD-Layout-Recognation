@@ -58,48 +58,32 @@ ic_layout_recognition/
 └── README.md
 ```
 
-### 1. 训练模型
+## 🚀 使用方法
 
-使用以下命令启动模型训练。训练过程采用自监督学习，通过对图像应用随机旋转来生成训练对，从而优化关键点检测和描述子生成。
+### 1. 配置
+首先，请修改 **`config.py`** 文件，设置正确的训练数据、验证数据和模型保存路径。
 
+### 2. 训练模型
 ```bash
-python train.py --data_dir path/to/layouts --save_dir path/to/save
+python train.py --data_dir /path/to/your/layouts --save_dir /path/to/your/models --epochs 50
+```
+使用 `--help` 查看更多选项。
+
+### 3. 模板匹配
+```bash
+python match.py --model_path /path/to/your/models/rord_model_final.pth \
+                --layout /path/to/layout.png \
+                --template /path/to/template.png \
+                --output /path/to/result.png
 ```
 
-| 参数 | 描述 |
-| :--- | :--- |
-| `--data_dir` | **[必需]** 包含 PNG 格式 IC 版图图像的目录。 |
-| `--save_dir` | **[必需]** 训练好的模型权重保存目录。 |
-
-### 2. 评估模型
-
-使用以下命令在验证集上评估模型的性能。评估脚本会计算基于 IoU 阈值的精确率、召回率和 F1 分数。
-
+### 4. 评估模型
 ```bash
-python evaluate.py --model_path path/to/model.pth --val_dir path/to/val/images --annotations_dir path/to/val/annotations --templates path/to/templates
+python evaluate.py --model_path /path/to/your/models/rord_model_final.pth \
+                   --val_dir /path/to/val/images \
+                   --annotations_dir /path/to/val/annotations \
+                   --templates_dir /path/to/templates
 ```
-
-| 参数 | 描述 |
-| :--- | :--- |
-| `--model_path` | **[必需]** 训练好的模型权重 (`.pth`) 文件路径。 |
-| `--val_dir` | **[必需]** 验证集图像目录。 |
-| `--annotations_dir` | **[必需]** 包含真实标注的 JSON 文件目录。 |
-| `--templates` | **[必需]** 模板图像的路径列表。 |
-
-### 3. 进行模板匹配
-
-使用以下命令将模板图像与指定的版图图像进行匹配。匹配过程利用 RoRD 模型提取关键点和描述子，通过互最近邻（MNN）匹配和 RANSAC 几何验证来定位模板。
-
-```bash
-python match.py --model_path path/to/model.pth --layout_path path/to/layout.png --template_path path/to/template.png --output_path path/to/output.png
-```
-
-| 参数 | 描述 |
-| :--- | :--- |
-| `--model_path` | **[必需]** 训练好的模型权重 (`.pth`) 文件路径。 |
-| `--layout_path` | **[必需]** 待匹配的版图图像路径。 |
-| `--template_path` | **[必需]** 模板图像路径。 |
-| `--output_path` | **[可选]** 保存可视化匹配结果的路径。 |
 
 ## 📦 数据准备
 
