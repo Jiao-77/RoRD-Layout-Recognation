@@ -13,7 +13,7 @@ class RoRD(nn.Module):
         """
         super(RoRD, self).__init__()
         
-        vgg16_features = models.vgg16(pretrained=True).features
+        vgg16_features = models.vgg16(pretrained=False).features
         
         # 共享骨干网络
         self.slice1 = vgg16_features[:23]  # 到 relu4_3
