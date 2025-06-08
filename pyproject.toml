@@ -1,10 +1,12 @@
-git[project]
+[project]
 name = "rord-layout-recognation"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "cairosvg>=2.8.2",
+    "gdstk>=0.9.60",
     "numpy>=2.3.0",
     "opencv-python>=4.11.0.86",
     "pillow>=11.2.1",
