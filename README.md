@@ -27,16 +27,18 @@ IC 版图在匹配时可能出现多种方向（0°、90°、180°、270° 及�
 
 ### 依赖安装
 
-推荐使用 `uv` 进行安装：
+**使用 uv（推荐）：**
 ```bash
-uv add torch torchvision opencv-python numpy Pillow
-uv lock
+# 安装 uv（如果尚未安装）
+pip install uv
+
+# 安装项目依赖
 uv sync
 ```
 
-或者，您也可以使用 `pip`：
+**使用 pip：**
 ```bash
-pip install torch torchvision opencv-python numpy Pillow
+pip install -e .
 ```
 
 ## 🚀 使用方法
@@ -60,16 +62,82 @@ ic_layout_recognition/
 
 ## 🚀 使用方法
 
-### 1. 配置
-首先，请修改 **`config.py`** 文件，设置正确的训练数据、验证数据和模型保存路径。
+### 📋 训练准备清单
 
-### 2. 训练模型
-```bash
-python train.py --data_dir /path/to/your/layouts --save_dir /path/to/your/models --epochs 50
+在开始训练前，请确保完成以下准备：
+
+#### 1. 数据准备
+- **训练数据**：准备PNG格式的布局图像（如电路板布局、建筑平面图等）
+- **数据目录结构**：
+  ```
+  your_data_directory/
+  ├── image1.png
+  ├── image2.png
+  └── ...
+  ```
+
+#### 2. 配置文件修改
+编辑 `config.py` 文件，修改以下路径：
+```python
+# 必需修改的路径
+LAYOUT_DIR = '你的布局图像目录路径'        # 训练数据目录
+SAVE_DIR = '你的模型和日志保存路径'        # 输出目录
 ```
-使用 `--help` 查看更多选项。
 
-### 3. 模板匹配
+#### 3. 环境检查
+确保已正确安装所有依赖：
+```bash
+python -c "import torch; print('PyTorch version:', torch.__version__)"
+python -c "import cv2; print('OpenCV version:', cv2.__version__)"
+```
+
+### 🎯 开始训练
+
+#### 基础训练
+```bash
+python train.py --data_dir /path/to/your/layouts --save_dir /path/to/your/models
+```
+
+#### 自定义训练参数
+```bash
+python train.py \
+    --data_dir /path/to/your/layouts \
+    --save_dir /path/to/your/models \
+    --epochs 50 \
+    --batch_size 8 \
+    --lr 5e-5
+```
+
+#### 查看所有可用参数
+```bash
+python train.py --help
+```
+
+### 📊 训练监控
+训练过程中会在 `SAVE_DIR` 目录下生成：
+- 日志文件：`training_YYYYMMDD_HHMMSS.log`
+- 最佳模型：`rord_model_best.pth`
+- 最终模型：`rord_model_final.pth`
+
+### 🚀 快速开始示例
+```bash
+# 1. 安装依赖
+uv sync
+
+# 2. 修改配置文件
+# 编辑 config.py 中的 LAYOUT_DIR 和 SAVE_DIR
+
+# 3. 开始训练
+python train.py --data_dir ./data/layouts --save_dir ./output
+
+# 4. 使用训练好的模型进行匹配
+python match.py --model_path ./output/rord_model_final.pth \
+                --layout ./test/layout.png \
+                --template ./test/template.png \
+                --output ./result.png
+```
+
+### 4. 模板匹配
 ```bash
 python match.py --model_path /path/to/your/models/rord_model_final.pth \
                 --layout /path/to/layout.png \
@@ -77,7 +145,7 @@ python match.py --model_path /path/to/your/models/rord_model_final.pth \
                 --output /path/to/result.png
 ```
 
-### 4. 评估模型
+### 5. 评估模型
 ```bash
 python evaluate.py --model_path /path/to/your/models/rord_model_final.pth \
                    --val_dir /path/to/val/images \

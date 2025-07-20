@@ -9,5 +9,5 @@ wheels/
 # Virtual environments
 .venv
 
-# Model Path File
-model.path/
+# Output file path
+out/
