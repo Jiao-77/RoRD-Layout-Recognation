@@ -7,18 +7,18 @@ from torchvision import models
 class RoRD(nn.Module):
     def __init__(self):
         """
-        修复后的 RoRD 模型。
-        - 实现了共享骨干网络，以提高计算效率和减少内存占用。
-        - 确保检测头和描述子头使用相同尺寸的特征图。
+        Repaired RoRD model.
+        - Implements shared backbone network to improve computational efficiency and reduce memory usage.
+        - Ensures detection head and descriptor head use feature maps of the same size.
         """
         super(RoRD, self).__init__()
         
         vgg16_features = models.vgg16(pretrained=False).features
         
-        # 共享骨干网络 - 只使用到 relu4_3，确保特征图尺寸一致
+        # Shared backbone network - only uses up to relu4_3 to ensure consistent feature map dimensions
         self.backbone = nn.Sequential(*list(vgg16_features.children())[:23])
 
-        # 检测头
+        # Detection head
         self.detection_head = nn.Sequential(
             nn.Conv2d(512, 256, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
@@ -28,7 +28,7 @@ class RoRD(nn.Module):
             nn.Sigmoid()
         )
         
-        # 描述子头
+        # Descriptor head
         self.descriptor_head = nn.Sequential(
             nn.Conv2d(512, 256, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
@@ -39,10 +39,10 @@ class RoRD(nn.Module):
         )
 
     def forward(self, x):
-        # 共享特征提取
+        # Shared feature extraction
         features = self.backbone(x)
         
-        # 检测器和描述子使用相同的特征图
+        # Detector and descriptor use the same feature maps
         detection_map = self.detection_head(features)
         descriptors = self.descriptor_head(features)
         

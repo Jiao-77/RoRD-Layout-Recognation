@@ -6,12 +6,12 @@ import json
 class ICLayoutDataset(Dataset):
     def __init__(self, image_dir, annotation_dir=None, transform=None):
         """
-        初始化 IC 版图数据集。
+        Initialize the IC layout dataset.
 
-        参数：
-            image_dir (str): 存储 PNG 格式 IC 版图图像的目录路径。
-            annotation_dir (str, optional): 存储 JSON 格式注释文件的目录路径。
-            transform (callable, optional): 应用于图像的可选变换（如 Sobel 边缘检测）。
+        Args:
+            image_dir (str): Directory path containing PNG format IC layout images.
+            annotation_dir (str, optional): Directory path containing JSON format annotation files.
+            transform (callable, optional): Optional transform to apply to images (e.g., Sobel edge detection).
         """
         self.image_dir = image_dir
         self.annotation_dir = annotation_dir
@@ -24,25 +24,25 @@ class ICLayoutDataset(Dataset):
 
     def __len__(self):
         """
-        返回数据集中的图像数量。
+        Return the number of images in the dataset.
 
-        返回：
-            int: 数据集大小。
+        Returns:
+            int: Dataset size.
         """
         return len(self.images)
 
     def __getitem__(self, idx):
         """
-        获取指定索引的图像和注释。
+        Get image and annotation at specified index.
 
-        参数：
-            idx (int): 图像索引。
+        Args:
+            idx (int): Image index.
 
-        返回：
-            tuple: (image, annotation)，image 为处理后的图像，annotation 为注释字典或空字典。
+        Returns:
+            tuple: (image, annotation), where image is the processed image and annotation is the annotation dict or empty dict.
         """
         img_path = os.path.join(self.image_dir, self.images[idx])
-        image = Image.open(img_path).convert('L')  # 转换为灰度图
+        image = Image.open(img_path).convert('L')  # Convert to grayscale
         if self.transform:
             image = self.transform(image)
         

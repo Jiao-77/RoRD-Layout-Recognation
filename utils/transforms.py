@@ -5,13 +5,13 @@ from PIL import Image
 class SobelTransform:
     def __call__(self, image):
         """
-        应用 Sobel 边缘检测，增强 IC 版图的几何边界。
+        Apply Sobel edge detection to enhance geometric boundaries of IC layouts.
 
-        参数：
-            image (PIL.Image): 输入图像（灰度图）。
+        Args:
+            image (PIL.Image): Input image (grayscale).
 
-        返回：
-            PIL.Image: 边缘增强后的图像。
+        Returns:
+            PIL.Image: Edge-enhanced image.
         """
         img_np = np.array(image)
         sobelx = cv2.Sobel(img_np, cv2.CV_64F, 1, 0, ksize=3)

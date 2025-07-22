@@ -3,12 +3,12 @@ from .transforms import SobelTransform
 
 def get_transform():
     """
-    获取统一的图像预处理管道。
-    确保训练、评估和推理使用完全相同的预处理。
+    Get unified image preprocessing pipeline.
+    Ensure training, evaluation, and inference use exactly the same preprocessing.
     """
     return transforms.Compose([
-        SobelTransform(),  # 应用 Sobel 边缘检测
+        SobelTransform(),  # Apply Sobel edge detection
         transforms.ToTensor(),
-        transforms.Lambda(lambda x: x.repeat(3, 1, 1)), # 适配 VGG 的三通道输入
+        transforms.Lambda(lambda x: x.repeat(3, 1, 1)), # Adapt to VGG's three-channel input
         transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
     ])
