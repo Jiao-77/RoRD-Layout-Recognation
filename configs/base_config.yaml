@@ -1,0 +1,25 @@
+training:
+  learning_rate: 5.0e-5
+  batch_size: 8
+  num_epochs: 50
+  patch_size: 256
+  scale_jitter_range: [0.8, 1.2]
+
+matching:
+  keypoint_threshold: 0.5
+  ransac_reproj_threshold: 5.0
+  min_inliers: 15
+  pyramid_scales: [0.75, 1.0, 1.5]
+  inference_window_size: 1024
+  inference_stride: 768
+
+evaluation:
+  iou_threshold: 0.5
+
+paths:
+  layout_dir: "path/to/layouts"
+  save_dir: "path/to/save"
+  val_img_dir: "path/to/val/images"
+  val_ann_dir: "path/to/val/annotations"
+  template_dir: "path/to/templates"
+  model_path: "path/to/save/model_final.pth"
