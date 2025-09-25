@@ -122,3 +122,136 @@
 - [ ] 修改配置和脚本，接入 SummaryWriter。
 - [ ] 准备示例 Notebook/文档，展示 TensorBoard 面板截图。
 - [ ] 后续评估是否需要接入 W&B、MLflow 等更高级平台。
+
+---
+
+# 推理与匹配改造计划（FPN + NMS）
+
+日期：2025-09-25
+
+## 目标
+- 将当前的“图像金字塔 + 多次推理”的匹配流程，升级为“单次推理 + 特征金字塔 (FPN)”以显著提速。
+- 在滑动窗口提取关键点后增加去重（NMS/半径抑制），降低冗余点与后续 RANSAC 的计算量。
+- 保持与现有 YAML 配置、TensorBoard 记录和命令行接口的一致性；以 uv 为包管理器管理依赖和运行。
+
+## 设计概览
+- FPN：在 `models/rord.py` 中，从骨干网络多层提取特征（例如 VGG 的 relu2_2/relu3_3/relu4_3），通过横向 1x1 卷积与自顶向下上采样构建 P2/P3/P4 金字塔特征；为每个尺度共享或独立地接上检测头与描述子头，导出同维度描述子。
+- 匹配路径：`match.py` 新增 FPN 路径，单次前向获得多尺度特征，逐层与模板进行匹配与几何验证；保留旧路径（图像金字塔）作为回退，通过配置开关切换。
+- 去重策略：在滑窗聚合关键点后，基于“分数优先 + 半径抑制 (radius NMS)”进行去重；半径和分数阈值配置化。
+
+## 配置变更（YAML）
+在 `configs/base_config.yaml` 中新增/扩展：
+
+```yaml
+model:
+   fpn:
+      enabled: true            # 开启 FPN 推理
+      out_channels: 256        # 金字塔特征通道数
+      levels: [2, 3, 4]        # 输出层级，对应 P2/P3/P4
+      norm: "bn"              # 归一化类型：bn/gn/none
+
+matching:
+   use_fpn: true              # 使用 FPN 路径；false 则沿用图像金字塔
+   nms:
+      enabled: true
+      radius: 4                # 半径抑制像素半径
+      score_threshold: 0.5     # 关键点保留的最低分数
+   # 其余已有参数保留，如 ransac_reproj_threshold/min_inliers/inference_window_size...
+```
+
+注意：所有相对路径依旧使用 `utils.config_loader.to_absolute_path` 以配置文件所在目录为基准解析。
+
+## 实施步骤
+
+1) 基线分支与依赖
+- 新开分支保存改造：
+   ```bash
+   git checkout -b feature/fpn-matching
+   uv sync
+   ```
+- 目前不引入新三方库，继续使用现有 `torch/opencv/numpy`。
+
+2) 模型侧改造（`models/rord.py`）
+- 提取多层特征：在骨干网络中暴露中间层输出（如 C2/C3/C4）。
+- 构建 FPN：
+   - 使用 1x1 conv 降维对齐通道；
+   - 自顶向下上采样并逐级相加；
+   - 3x3 conv 平滑，得到 P2/P3/P4；
+   - 可选归一化（BN/GN）。
+- 头部适配：复用或复制现有检测头/描述子头到每个 P 层，输出：
+   - det_scores[L]：B×1×H_L×W_L
+   - descriptors[L]：B×D×H_L×W_L（D 与现有描述子维度一致）
+- 前向接口：
+   - 训练模式：维持现有输出以兼容训练；
+   - 匹配/评估模式：支持 `return_pyramid=True` 返回 {P2,P3,P4} 的 det/desc。
+
+3) 匹配侧改造（`match.py`）
+- 配置读取：根据 `matching.use_fpn` 决定走 FPN 或旧图像金字塔路径。
+- FPN 路径：
+   - 对 layout 与 template 各做一次前向，获得 {det, desc}×L；
+   - 对每个层级 L：
+      - 从 det_scores[L] 以 `score_threshold` 抽取关键点坐标与分数；
+      - 半径 NMS 去重（见步骤 4）；
+      - 使用 desc[L] 在对应层做特征最近邻匹配（可选比值测试）并估计单应性 H_L（RANSAC）；
+   - 融合多个层级的候选：选取内点数最多或综合打分最佳的实例；
+   - 将层级坐标映射回原图坐标；输出 bbox 与 H。
+- 旧路径保留：若 `use_fpn=false`，继续使用当前图像金字塔多次推理策略，便于回退与对照实验。
+
+4) 关键点去重（NMS/半径抑制）
+- 输入：关键点集合 K = {(x, y, score)}。
+- 算法：按 score 降序遍历，若与已保留点的欧氏距离 < radius 则丢弃，否则保留。
+- 复杂度：O(N log N) 排序 + O(N·k) 检查（k 为邻域个数，可通过网格划分加速）。
+- 参数：`matching.nms.radius`、`matching.nms.score_threshold`。
+
+5) TensorBoard 记录（扩展）
+- Scalars：
+   - `match_fpn/level_L/keypoints_before_nms`、`keypoints_after_nms`
+   - `match_fpn/level_L/inliers`、`best_instance_inliers`
+   - `match_fpn/instances_found`、`runtime_ms`
+- Text/Image：
+   - 关键点可视化（可选），最佳实例覆盖图；
+   - 记录使用的层级与最终选中尺度信息。
+
+6) 兼容性与回退
+- 通过 YAML `matching.use_fpn` 开关控制路径；
+- 保持 CLI 不变，新增可选 `--fpn-off`（等同 use_fpn=false）仅作为临时调试；
+- 若新路径异常可快速回退旧路径，保证生产可用性。
+
+## 开发里程碑与工时预估
+- M1（0.5 天）：配置与分支、占位接口、日志钩子。
+- M2（1.5 天）：FPN 实现与前向接口；单图 smoke 测试。
+- M3（1 天）：`match.py` FPN 路径、尺度回映射与候选融合。
+- M4（0.5 天）：NMS 实现与参数打通；
+- M5（0.5 天）：TensorBoard 指标与可视化；
+- M6（0.5 天）：对照基线的性能与速度评估，整理报告。
+
+## 质量门禁与验收标准
+- 构建：`uv sync` 无错误；`python -m compileall` 通过；
+- 功能：在 2–3 张样例上，FPN 路径输出的实例数量与旧路径相当或更优；
+- 速度：相同输入，FPN 路径总耗时较旧路径下降 ≥ 30%；
+- 稳定性：无异常崩溃；在找不到匹配时能优雅返回空结果；
+- 指标：TensorBoard 中关键点数量、NMS 前后对比、内点数、总实例数与运行时均可见。
+
+## 快速试用（命令）
+```bash
+# 同步环境
+uv sync
+
+# 基于 YAML 启用 FPN 匹配（推荐）
+uv run python match.py \
+   --config configs/base_config.yaml \
+   --layout /path/to/layout.png \
+   --template /path/to/template.png \
+   --tb_log_matches
+
+# 临时关闭 FPN（对照实验）
+# 可通过把 configs 中 matching.use_fpn 设为 false，或后续提供 --fpn-off 开关
+
+# 打开 TensorBoard 查看匹配指标
+uv run tensorboard --logdir runs
+```
+
+## 风险与回滚
+- FPN 输出与原检测/描述子头的维度/分布不一致，需在实现时对齐通道与归一化；
+- 多层融合策略（如何选取最佳实例）可能影响稳定性，可先以“内点数最大”作为启发式；
+- 如出现精度下降或不稳定，立即回退 `matching.use_fpn=false`，保留旧流程并开启数据记录比对差异。

@@ -274,6 +274,51 @@ RoRD 模型基于 D2-Net 架构，使用 VGG-16 作为骨干网络，**专门针
 - **二值化特征距离**: 强化几何边界特征，弱化灰度变化
 - **几何感知困难负样本**: 基于结构相似性而非像素相似性选择负样本
 
+## 🔎 推理与匹配（FPN 路径与 NMS）
+
+项目已支持通过 FPN 单次推理产生多尺度特征，并在匹配阶段引入半径 NMS 去重以减少冗余关键点：
+
+在 `configs/base_config.yaml` 中启用 FPN 与 NMS：
+
+```yaml
+model:
+  fpn:
+    enabled: true
+    out_channels: 256
+    levels: [2, 3, 4]
+
+matching:
+  use_fpn: true
+  nms:
+    enabled: true
+    radius: 4
+    score_threshold: 0.5
+```
+
+运行匹配并将过程写入 TensorBoard：
+
+```bash
+uv run python match.py \
+  --config configs/base_config.yaml \
+  --layout /path/to/layout.png \
+  --template /path/to/template.png \
+  --tb_log_matches
+```
+
+如需回退旧“图像金字塔”路径，将 `matching.use_fpn` 设为 `false` 即可。
+
+也可使用 CLI 快捷开关临时覆盖：
+
+```bash
+# 关闭 FPN（等同 matching.use_fpn=false）
+uv run python match.py --config configs/base_config.yaml --fpn_off \
+  --layout /path/to/layout.png --template /path/to/template.png
+
+# 关闭关键点去重（NMS）
+uv run python match.py --config configs/base_config.yaml --no_nms \
+  --layout /path/to/layout.png --template /path/to/template.png
+```
+
 ### 训练策略 - 几何结构学习
 模型通过**几何结构学习**策略进行训练：
 - **曼哈顿变换生成训练对**: 利用90度旋转等曼哈顿变换
