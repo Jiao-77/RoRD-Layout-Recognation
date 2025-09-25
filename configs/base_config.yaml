@@ -16,6 +16,11 @@ matching:
 evaluation:
   iou_threshold: 0.5
 
+logging:
+  use_tensorboard: true
+  log_dir: "runs"
+  experiment_name: "baseline"
+
 paths:
   layout_dir: "path/to/layouts"
   save_dir: "path/to/save"
