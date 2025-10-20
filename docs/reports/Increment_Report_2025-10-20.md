@@ -59,6 +59,110 @@
 
 > 说明：完整复现命令与更全面的实验汇总，见 `docs/description/Performance_Benchmark.md`。
 
+### 3.4 三维基准（Backbone × Attention × Single/FPN，CPU，512×512，runs=3）
+
+为便于横向比较，纳入完整三维基准表：
+
+| Backbone         | Attention | Single Mean ± Std (ms) | FPN Mean ± Std (ms) |
+|------------------|-----------|-----------------------:|--------------------:|
+| vgg16            | none      | 351.65 ± 1.88          | 719.33 ± 3.95       |
+| vgg16            | se        | 349.76 ± 2.00          | 721.41 ± 2.74       |
+| vgg16            | cbam      | 354.45 ± 1.49          | 744.76 ± 29.32      |
+| resnet34         | none      | 90.99 ± 0.41           | 117.22 ± 0.41       |
+| resnet34         | se        | 90.78 ± 0.47           | 115.91 ± 1.31       |
+| resnet34         | cbam      | 96.50 ± 3.17           | 111.09 ± 1.01       |
+| efficientnet_b0  | none      | 40.45 ± 1.53           | 127.30 ± 0.09       |
+| efficientnet_b0  | se        | 46.48 ± 0.26           | 142.35 ± 6.61       |
+| efficientnet_b0  | cbam      | 47.11 ± 0.47           | 150.99 ± 12.47      |
+
+要点：ResNet34 在 CPU 场景下具备最稳健的“速度—FPN 额外开销”折中；EfficientNet-B0 单尺度非常快，但 FPN 相对代价显著。
+
+### 3.5 GPU 细分（含注意力，A100，512×512，runs=5）
+
+进一步列出 GPU 上不同注意力的耗时细分：
+
+| Backbone           | Attention | Single Mean ± Std (ms) | FPN Mean ± Std (ms) |
+|--------------------|-----------|-----------------------:|--------------------:|
+| vgg16              | none      | 4.53 ± 0.02            | 8.51 ± 0.002        |
+| vgg16              | se        | 3.80 ± 0.01            | 7.12 ± 0.004        |
+| vgg16              | cbam      | 3.73 ± 0.02            | 6.95 ± 0.09         |
+| resnet34           | none      | 2.32 ± 0.04            | 2.73 ± 0.007        |
+| resnet34           | se        | 2.33 ± 0.01            | 2.73 ± 0.004        |
+| resnet34           | cbam      | 2.46 ± 0.04            | 2.74 ± 0.004        |
+| efficientnet_b0    | none      | 3.69 ± 0.07            | 4.38 ± 0.02         |
+| efficientnet_b0    | se        | 3.76 ± 0.06            | 4.37 ± 0.03         |
+| efficientnet_b0    | cbam      | 3.99 ± 0.08            | 4.41 ± 0.02         |
+
+要点：GPU 环境下注意力对耗时的影响较小；ResNet34 仍是单尺度与 FPN 的最佳选择，FPN 额外开销约 +18%。
+
+### 3.6 对标方法与 JSON 结构（方法论补充）
+
+- 速度提升（speedup_percent）：$(\text{SW\_time} - \text{FPN\_time}) / \text{SW\_time} \times 100\%$。
+- 显存节省（memory_saving_percent）：$(\text{SW\_mem} - \text{FPN\_mem}) / \text{SW\_mem} \times 100\%$。
+- 精度保障：匹配数不显著下降（例如 FPN_matches ≥ SW_matches × 0.95）。
+
+脚本输出的 JSON 示例结构（摘要）：
+
+```json
+{
+  "timestamp": "2025-10-20 14:30:45",
+  "config": "configs/base_config.yaml",
+  "model_path": "path/to/model_final.pth",
+  "layout_path": "test_data/layout.png",
+  "template_path": "test_data/template.png",
+  "device": "cuda:0",
+  "fpn": {
+    "method": "FPN",
+    "mean_time_ms": 245.32,
+    "std_time_ms": 12.45,
+    "gpu_memory_mb": 1024.5,
+    "num_runs": 5
+  },
+  "sliding_window": {
+    "method": "Sliding Window",
+    "mean_time_ms": 352.18,
+    "std_time_ms": 18.67
+  },
+  "comparison": {
+    "speedup_percent": 30.35,
+    "memory_saving_percent": 21.14,
+    "fpn_faster": true,
+    "meets_speedup_target": true,
+    "meets_memory_target": true
+  }
+}
+```
+
+### 3.7 复现实验命令（便携）
+
+CPU 注意力对比：
+
+```zsh
+PYTHONPATH=. uv run python tests/benchmark_attention.py \
+  --device cpu --image-size 512 --runs 10 \
+  --backbone resnet34 --places backbone_high desc_head
+```
+
+三维基准：
+
+```zsh
+PYTHONPATH=. uv run python tests/benchmark_grid.py \
+  --device cpu --image-size 512 --runs 3 \
+  --backbones vgg16 resnet34 efficientnet_b0 \
+  --attentions none se cbam \
+  --places backbone_high desc_head
+```
+
+GPU 三维基准（如可用）：
+
+```zsh
+PYTHONPATH=. uv run python tests/benchmark_grid.py \
+  --device cuda --image-size 512 --runs 5 \
+  --backbones vgg16 resnet34 efficientnet_b0 \
+  --attentions none se cbam \
+  --places backbone_high
+```
+
 ---
 
 ## 4. 数据与训练建议（Actionable Recommendations）
