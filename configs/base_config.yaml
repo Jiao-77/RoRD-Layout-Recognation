@@ -12,6 +12,17 @@ model:
     levels: [2, 3, 4]
     norm: "bn"
 
+  # 新增：可切换骨干网络配置（默认为 vgg16，保持与现有实现一致）
+  backbone:
+    name: "vgg16"           # 可选：vgg16 | resnet34 | efficientnet_b0
+    pretrained: false        # 是否加载 ImageNet 预训练权重（如可用）
+
+  # 新增：可选注意力机制（默认关闭，避免影响现有结果）
+  attention:
+    enabled: false
+    type: "none"            # 可选：none | cbam | se
+    places: []               # 插入位置：backbone_high | det_head | desc_head（数组）
+
 matching:
   keypoint_threshold: 0.5
   ransac_reproj_threshold: 5.0
