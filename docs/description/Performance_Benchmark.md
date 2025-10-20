@@ -17,6 +17,53 @@
 
 - 备注：本次测试在 CPU 上进行，`gpu_mem_mb` 始终为 0。
 
+## 注意力 A/B（CPU，resnet34，512×512，runs=10，places=backbone_high+desc_head）
+
+| Attention | Single Mean ± Std | FPN Mean ± Std |
+|-----------|-------------------:|----------------:|
+| none      | 97.57 ± 0.55       | 124.57 ± 0.48   |
+| se        | 101.48 ± 2.13      | 123.12 ± 0.50   |
+| cbam      | 119.80 ± 2.38      | 123.11 ± 0.71   |
+
+观察：
+- 单尺度路径对注意力类型更敏感，CBAM 开销相对更高，SE 较轻；
+- FPN 路径耗时在本次设置下差异很小（可能因注意力仅在 `backbone_high/desc_head`，且 FPN 头部计算占比较高）。
+
+复现实验：
+```zsh
+PYTHONPATH=. uv run python tests/benchmark_attention.py \
+  --device cpu --image-size 512 --runs 10 \
+  --backbone resnet34 --places backbone_high desc_head
+```
+
+## 三维基准（Backbone × Attention × Single/FPN）
+
+环境：CPU，输入 1×3×512×512，重复 3 次，places=backbone_high,desc_head。
+
+| Backbone         | Attention | Single Mean ± Std (ms) | FPN Mean ± Std (ms) |
+|------------------|-----------|-----------------------:|--------------------:|
+| vgg16            | none      | 351.65 ± 1.88          | 719.33 ± 3.95       |
+| vgg16            | se        | 349.76 ± 2.00          | 721.41 ± 2.74       |
+| vgg16            | cbam      | 354.45 ± 1.49          | 744.76 ± 29.32      |
+| resnet34         | none      | 90.99 ± 0.41           | 117.22 ± 0.41       |
+| resnet34         | se        | 90.78 ± 0.47           | 115.91 ± 1.31       |
+| resnet34         | cbam      | 96.50 ± 3.17           | 111.09 ± 1.01       |
+| efficientnet_b0  | none      | 40.45 ± 1.53           | 127.30 ± 0.09       |
+| efficientnet_b0  | se        | 46.48 ± 0.26           | 142.35 ± 6.61       |
+| efficientnet_b0  | cbam      | 47.11 ± 0.47           | 150.99 ± 12.47      |
+
+复现实验：
+
+```zsh
+PYTHONPATH=. uv run python tests/benchmark_grid.py \
+  --device cpu --image-size 512 --runs 3 \
+  --backbones vgg16 resnet34 efficientnet_b0 \
+  --attentions none se cbam \
+  --places backbone_high desc_head
+```
+
+运行会同时输出控制台摘要并保存 JSON：`benchmark_grid.json`。
+
 ## 观察与解读
 - vgg16 明显最慢，FPN 额外的横向/上采样代价在 CPU 上更突出（>2×）。
 - resnet34 在单尺度上显著快于 vgg16，FPN 增幅较小（约 +25%）。

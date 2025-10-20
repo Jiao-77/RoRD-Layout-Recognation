@@ -1,173 +1,200 @@
-# 下一步工作计划 (NextStep)
+## 一、数据策略与增强 (Data Strategy & Augmentation)
 
-**最后更新**: 2025-10-20  
-**范围**: 仅聚焦于 `feature_work.md` 的第二部分「模型架构 (Model Architecture)」的落地执行计划  
-**上下文**: 核心功能已完成，本文档将模型架构优化转化为可执行的工程计划，便于直接实施与验收。
+> 目标：提升模型的鲁棒性和泛化能力，减少对大量真实数据的依赖。
 
-> 参考来源：`docs/feature_work.md` 第二部分；更宏观的阶段规划见 `docs/todos/`
+- [x] 引入弹性变形 (Elastic Transformations)
+	- ✔️ 价值：模拟芯片制造中可能出现的微小物理形变，使模型对非刚性变化更鲁棒。
+	- 🧭 关键原则（与当前数据管线一致）：
+		- 现有自监督训练数据集 `ICLayoutTrainingDataset` 会返回 (original, rotated, H)；其中 H 是两张 patch 间的单应关系，用于 loss 监督。
+		- 非刚性弹性变形若只对其中一张或在生成 H 之后施加，会破坏几何约束，导致 H 失效。
+		- 因此，Elastic 需在“生成 homography 配对之前”对基础 patch 施加；随后对该已变形的 patch 再执行旋转/镜像与单应计算，这样 H 仍严格成立。
+	- 📝 执行计划：
+		1) 依赖核对
+			 - `pyproject.toml` 已包含 `albumentations>=2.0.8`，无需新增依赖；确保环境安装齐全。
+		2) 集成位置与方式
+			 - 在 `data/ic_dataset.py` 的 `ICLayoutTrainingDataset.__getitem__` 中，裁剪并缩放得到 `patch` 后，转换为 `np.ndarray`，对其调用 `albumentations` 管道（包含 `A.ElasticTransform`）。
+			 - 将变形后的 `patch_np_uint8` 作为“基准图”，再按现有逻辑计算旋转/镜像与 `homography`，生成 `transformed_patch`，从而确保 H 有效。
+		3) 代码改动清单（建议）
+			 - `data/ic_dataset.py`
+				 - 顶部新增：`import albumentations as A`
+				 - `__init__` 新增可选参数：`use_albu: bool=False`、`albu_params: dict|None=None`
+				 - 在 `__init__` 构造 `self.albu = A.Compose([...])`（当 `use_albu` 为 True 时），包含：
+					 - `A.ElasticTransform(alpha=40, sigma=6, alpha_affine=6, p=0.3)`
+					 - （可选）`A.RandomBrightnessContrast(p=0.5)`、`A.GaussNoise(var_limit=(5.0, 20.0), p=0.3)` 以替代当前手写的亮度/对比度与噪声逻辑（减少重复）。
+				 - 在 `__getitem__`：裁剪与缩放后，若启用 `self.albu`：`patch_np_uint8 = self.albu(image=patch_np_uint8)["image"]`，随后再计算旋转/镜像与 `homography`。
+				 - 注意：保持输出张量与当前 `utils.data_utils.get_transform()` 兼容（单通道→三通道→Normalize）。
+			 - `configs/base_config.yaml`
+				 - 新增配置段：
+					 - `augment.elastic.enabled: true|false`
+					 - `augment.elastic.alpha: 40`
+					 - `augment.elastic.sigma: 6`
+					 - `augment.elastic.alpha_affine: 6`
+					 - `augment.elastic.prob: 0.3`
+					 - （可选）`augment.photometric.*` 开关与参数
+			 - `train.py`
+				 - 从配置读取上述参数，并将 `use_albu` 与 `albu_params` 通过 `ICLayoutTrainingDataset(...)` 传入（不影响现有 `get_transform()`）。
+		4) 参数与默认值建议
+			 - 起始：`alpha=40, sigma=6, alpha_affine=6, p=0.3`；根据训练收敛与可视化效果微调。
+			 - 若发现描述子对局部形变敏感，可逐步提高 `alpha` 或 `p`；若训练不稳定则降低。
+		5) 验证与可视化
+			 - 在 `tests/benchmark_grid.py` 或新增简单可视化脚本中，采样 16 个 (original, rotated) 对，叠加可视化 H 变换后的网格，确认几何一致性未破坏。
+			 - 训练前 1000 个 batch：记录 `loss_det/loss_desc` 曲线，确认未出现异常发散。
 
----
+- [x] 创建合成版图数据生成器
+	- ✔️ 价值：解决真实版图数据获取难、数量少的问题，通过程序化生成大量多样化的训练样本。
+	- 📝 执行计划：
+		1) 新增脚本 `tools/generate_synthetic_layouts.py`
+			 - 目标：使用 `gdstk` 程序化生成包含不同尺寸、密度与单元类型的 GDSII 文件。
+			 - 主要能力：
+				 - 随机生成“标准单元”模版（如若干矩形/多边形组合）、金属走线、过孔阵列；
+				 - 支持多层（layer/datatype）与规则化阵列（row/col pitch）、占空比（density）控制；
+				 - 形状参数与布局由随机种子控制，支持可重复性。
+			 - CLI 设计（示例）：
+				 - `--out-dir data/synthetic/gds`、`--num-samples 1000`、`--seed 42`
+				 - 版图规格：`--width 200um --height 200um --grid 0.1um`
+				 - 多样性开关：`--cell-types NAND,NOR,INV --metal-layers 3 --density 0.1-0.6`
+			 - 关键实现要点：
+				 - 使用 `gdstk.Library()` 与 `gdstk.Cell()` 组装基本单元；
+				 - 通过 `gdstk.Reference` 和阵列生成放置；
+				 - 生成完成后 `library.write_gds(path)` 落盘。
+		2) 批量转换 GDSII → PNG（训练用）
+			 - 现状核对：仓库中暂无 `tools/layout2png.py`；计划新增该脚本（与本项一并交付）。
+			 - 推荐实现 A（首选）：使用 `klayout` 的 Python API（`pya`）以无头模式加载 GDS，指定层映射与缩放，导出为高分辨率 PNG：
+				 - 脚本 `tools/layout2png.py` 提供 CLI：`--in data/synthetic/gds --out data/synthetic/png --dpi 600 --layers 1/0:gray,2/0:blue ...`
+				 - 支持目录批量与单文件转换；可配置画布背景、线宽、边距。
+			 - 替代实现 B：导出 SVG 再用 `cairosvg` 转 PNG（依赖已在项目中），适合无 klayout 环境的场景。
+			 - 输出命名规范：与 GDS 同名，如 `chip_000123.gds → chip_000123.png`。
+		3) 数据目录与元数据
+			 - 目录结构建议：
+				 - `data/synthetic/gds/`、`data/synthetic/png/`、`data/synthetic/meta/`
+			 - 可选：为每个样本生成 `meta/*.json`，记录层数、单元类型分布、密度等，用于后续分析/分层采样。
+		4) 与训练集集成
+			 - `configs/base_config.yaml` 新增：
+				 - `paths.synthetic_dir: data/synthetic/png`
+				 - `training.use_synthetic_ratio: 0.0~1.0`（混合采样比例；例如 0.3 表示 30% 合成样本）
+			 - 在 `train.py` 中：
+				 - 若 `use_synthetic_ratio>0`，构建一个 `ICLayoutTrainingDataset` 指向合成 PNG 目录；
+				 - 实现简单的比例采样器或 `ConcatDataset + WeightedRandomSampler` 以按比例混合真实与合成样本。
+		5) 质量与稳健性检查
+			 - 可视化抽样：随机展示若干 PNG，检查层次颜色、对比度、线宽是否清晰；
+			 - 分布对齐：统计真实数据与合成数据的连线长度分布、拓扑度量（如节点度、环路数量），做基础分布对齐；
+			 - 训练烟雾测试：仅用 100～200 个合成样本跑 1～2 个 epoch，确认训练闭环无错误、loss 正常下降。
+		6) 基准验证与复盘
+			 - 在 `tests/benchmark_grid.py` 与 `tests/benchmark_backbones.py` 增加一组“仅真实 / 真实+合成”的对照实验；
+			 - 记录 mAP/匹配召回/描述子一致性等指标，评估增益；
+			 - 产出 `docs/Performance_Benchmark.md` 的对比表格。
 
-## 🔴 模型架构优化（Feature Work 第二部分）
+### 验收标准 (Acceptance Criteria)
 
-目标：在保证现有精度的前提下，提升特征提取效率与推理速度；为后续注意力机制与多尺度策略提供更强的特征基础。
+- Elastic 变形：
+	- [ ] 训练数据可视化（含 H 网格叠加）无几何错位；
+	- [ ] 训练前若干 step loss 无异常尖峰，长期收敛不劣于 baseline；
+	- [ ] 可通过配置无缝开/关与调参。
+- 合成数据：
+	- [ ] 能批量生成带多层元素的 GDS 文件并成功转为 PNG；
+	- [ ] 训练脚本可按设定比例混合采样真实与合成样本；
+	- [ ] 在小规模对照实验中，验证指标有稳定或可解释的变化（不劣化）。
 
-### 总体验收标准（全局）
-- [ ] 训练/验证流程在新骨干和注意力方案下均可跑通，无崩溃/NaN。
-- [ ] 在代表性验证集上，最终指标（IoU/mAP）不低于当前 VGG-16 基线；若下降需给出改进措施或回滚建议。
-- [ ] 推理时延或显存占用至少一种维度优于基线，或达到“相当 + 结构可扩展”的工程收益。
-- [ ] 关键改动均通过配置开关控制，可随时回退。
+### 风险与规避 (Risks & Mitigations)
 
----
+- 非刚性变形破坏 H 的风险：仅在生成 homography 前对基准 patch 施加 Elastic，或在两图上施加相同变形但更新 H′=f∘H∘f⁻¹（当前计划采用前者，简单且稳定）。
+- GDS → PNG 渲染差异：优先使用 `klayout`，保持工业级渲染一致性；无 `klayout` 时使用 SVG→PNG 备选路径。
+- 合成分布与真实分布不匹配：通过密度与单元类型分布约束进行对齐，并在训练中控制混合比例渐进提升。
 
-## 2.1 实验更现代的骨干网络（Backbone）
+### 里程碑与时间估算 (Milestones & ETA)
 
-优先级：🟠 中  |  预计工期：~1 周  |  产出：可切换的 backbone 实现 + 对照报告
+## 二、实现状态与使用说明（2025-10-20 更新）
 
-### 设计要点（小合约）
-- 输入：与现有 `RoRD` 一致的图像张量 B×C×H×W。
-- 输出：供检测头/描述子头使用的中高层特征张量；通道数因骨干不同而异（VGG:512、ResNet34:512、Eff-B0:1280）。
-- 约束：不改变下游头部的接口形状（头部输入通道需根据骨干进行对齐适配）。
-- 失败模式：通道不匹配/梯度不通/预训练权重未正确加载/收敛缓慢。
+- Elastic 变形已按计划集成：
+	- 开关与参数：见 `configs/base_config.yaml` 下的 `augment.elastic` 与 `augment.photometric`；
+	- 数据集实现：`data/ic_dataset.py` 中 `ICLayoutTrainingDataset`；
+	- 可视化验证：`tools/preview_dataset.py --dir <png_dir> --n 8 --elastic`。
 
-### 配置扩展（YAML）
-在 `configs/base_config.yaml` 增加（或确认存在）：
+- 合成数据生成与渲染：
+	- 生成 GDS：`tools/generate_synthetic_layouts.py --out-dir data/synthetic/gds --num 100 --seed 42`；
+	- 转换 PNG：`tools/layout2png.py --in data/synthetic/gds --out data/synthetic/png --dpi 600`；
+	- 训练混采：在 `configs/base_config.yaml` 设置 `synthetic.enabled: true`、`synthetic.png_dir: data/synthetic/png`、`synthetic.ratio: 0.3`。
 
-```yaml
-model:
-	backbone:
-		name: "vgg16"   # 可选：vgg16 | resnet34 | efficientnet_b0
-		pretrained: true
-		# 用于选择抽取的特征层（按不同骨干约定名称）
-		feature_layers:
-			vgg16: ["relu3_3", "relu4_3"]
-			resnet34: ["layer3", "layer4"]
-			efficientnet_b0: ["features_5", "features_7"]
+- 训练脚本：
+	- `train.py` 已接入真实/合成混采（ConcatDataset + WeightedRandomSampler），验证集仅用真实数据；
+	- TensorBoard 文本摘要记录数据构成（mix 开关、比例、样本量）。
+
+注意：若未安装 KLayout，可自动回退 gdstk+SVG 路径；显示效果可能与 KLayout 存在差异。
+
+- D1：Elastic 集成 + 可视化验证（代码改动与测试）
+- D2：合成生成器初版（GDS 生成 + PNG 渲染脚本）
+- D3：训练混合采样接入 + 小规模基准
+- D4：参数扫与报告更新（Performance_Benchmark.md）
+
+### 一键流水线（生成 → 渲染 → 预览 → 训练）
+
+1) 生成 GDS（合成版图）
+```bash
+uv run python tools/generate_synthetic_layouts.py --out_dir data/synthetic/gds --num 200 --seed 42
 ```
 
-### 代码改动建议
-- 文件：`models/rord.py`
-	1) 在 `__init__` 中根据 `cfg.model.backbone.name` 动态构建骨干：
-		 - vgg16（现状保持）
-		 - resnet34：从 `torchvision.models.resnet34(weights=IMAGENET1K_V1)` 构建；保存 `layer3/layer4` 输出。
-		 - efficientnet_b0：从 `torchvision.models.efficientnet_b0(weights=IMAGENET1K_V1)` 构建；保存末两段 `features` 输出。
-	2) 为不同骨干提供统一的“中间层特征导出”接口（注册 forward hook 或显式调用子模块）。
-	3) 依据所选骨干的输出通道，调整检测头与描述子头的输入通道（如使用 1×1 conv 过渡层以解耦通道差异）。
-	4) 保持现有前向签名与返回数据结构不变（训练/推理兼容）。
+2) 渲染 PNG（KLayout 优先，自动回退 gdstk+SVG）
+```bash
+uv run python tools/layout2png.py --in data/synthetic/gds --out data/synthetic/png --dpi 600
+```
 
-### 进展更新（2025-10-20）
-- 已完成：在 `models/rord.py` 集成多骨干选择（`vgg16`/`resnet34`/`efficientnet_b0`），并实现统一的中间层抽取函数 `_extract_c234`（可后续重构为 `build_backbone`/`extract_features` 明确接口）。
-- 已完成：FPN 通用化，基于 C2/C3/C4 构建 P2/P3/P4，按骨干返回正确的 stride。
-- 已完成：单图前向 Smoke Test（三种骨干，单尺度与 FPN）均通过。
-- 已完成：CPU 环境 A/B 基准（单尺度 vs FPN）见 `docs/description/Performance_Benchmark.md`。
-- 待完成：GPU 环境基准（速度/显存）、基于真实数据的精度评估与收敛曲线对比。
+3) 预览训练对（核验增强/H 一致性）
+```bash
+uv run python tools/preview_dataset.py --dir data/synthetic/png --out preview.png --n 8 --elastic
+```
 
-### 落地步骤（Checklist）
-- [x] 在 `models/rord.py` 增加/落地骨干构建与中间层抽取逻辑（当前通过 `_extract_c234` 实现）。
-- [x] 接入 ResNet-34：返回等价中高层特征（layer2/3/4，通道≈128/256/512）。
-- [x] 接入 EfficientNet-B0：返回 `features[2]/[3]/[6]`（约 24/40/192），FPN 以 1×1 横向连接对齐到 `fpn_out_channels`。
-- [x] 头部适配：单尺度头使用骨干高层通道数；FPN 头统一使用 `fpn_out_channels`。
-- [ ] 预训练权重：支持 `pretrained=true` 加载；补充权重加载摘要打印（哪些层未命中）。
-- [x] 单图 smoke test：前向通过、无 NaN（三种骨干，单尺度与 FPN）。
-
-### 评测与选择（A/B 实验）
-- [ ] 在固定数据与超参下，比较 vgg16/resnet34/efficientnet_b0：
-	- 收敛速度（loss 曲线 0-5 epoch）
-	- 推理速度（ms / 2048×2048）与显存（GB）[CPU 初步结果已产出，GPU 待复测；见 `docs/description/Performance_Benchmark.md`]
-	- 验证集 IoU/mAP（真实数据集待跑）
-- [ ] 形成表格与可视化图，给出选择结论与原因（CPU 版初稿已在报告中给出观察）。
-- [ ] 若新骨干在任一关键指标明显受损，则暂缓替换，仅保留为可切换实验选项。
-
-### 验收标准（2.1）
-- [ ] 三种骨干方案均可训练与推理（当前仅验证推理，训练与收敛待验证）；
-- [ ] 最终入选骨干在 IoU/mAP 不低于 VGG 的前提下，带来显著的速度/显存优势之一；
-- [x] 切换完全配置化（无需改代码）。
-
-### 风险与回滚（2.1）
-- 通道不匹配导致维度错误 → 在进入头部前统一使用 1×1 conv 适配；
-- 预训练权重与自定义层名不一致 → 显式映射并记录未加载层；
-- 收敛变慢 → 暂时提高训练轮数、调学习率/BN 冻结策略；不达标即回滚 `backbone.name=vgg16`。
-
----
-
-## 2.2 集成注意力机制（CBAM / SE-Net）
-
-优先级：🟠 中  |  预计工期：~7–10 天  |  产出：注意力增强的 RoRD 变体 + 对照报告
-
-### 模块选择与嵌入位置
-- 方案 A：CBAM（通道注意 + 空间注意），插入至骨干高层与两类头部之前；
-- 方案 B：SE-Net（通道注意），轻量但仅通道维，插入多个阶段以增强稳定性；
-- 建议：先实现 CBAM，保留 SE 作为备选开关。
-
-### 配置扩展（YAML）
+4) 在 YAML 中开启混采与 Elastic（示例）
 ```yaml
-model:
-	attention:
+synthetic:
+	enabled: true
+	png_dir: data/synthetic/png
+	ratio: 0.3
+
+augment:
+	elastic:
 		enabled: true
-		type: "cbam"   # 可选：cbam | se | none
-		places: ["backbone_high", "det_head", "desc_head"]
-		# 可选超参：reduction、kernel_size 等
-		reduction: 16
-		spatial_kernel: 7
+		alpha: 40
+		sigma: 6
+		alpha_affine: 6
+		prob: 0.3
 ```
 
-### 代码改动建议
-- 文件：`models/rord.py`
-	1) 实现 `CBAM` 与 `SEBlock` 模块（或从可靠实现迁移），提供简洁 forward。
-	2) 在 `__init__` 中依据 `cfg.model.attention` 决定在何处插入：
-		 - backbone 高层输出后（增强高层语义的判别性）；
-		 - 检测头、描述子头输入前（分别强化不同任务所需特征）。
-	3) 注意保持张量尺寸不变；若引入残差结构，保证与原路径等价时可退化为恒等映射。
+5) 开始训练
+```bash
+uv run python train.py --config configs/base_config.yaml
+```
 
-### 落地步骤（Checklist）
-- [ ] 实现 `CBAM`：通道注意（MLP/Avg+Max Pool）+ 空间注意（7×7 conv）。
-- [ ] 实现 `SEBlock`：Squeeze（全局池化）+ Excitation（MLP, reduction）。
-- [ ] 在 `RoRD` 中用配置化开关插拔注意力，默认关闭。
-- [ ] 在进入检测/描述子头前分别测试开启/关闭注意力的影响。
-- [ ] 记录注意力图（可选）：导出中间注意图用于可视化对比。
+可选：使用单脚本一键执行（含配置写回）
+```bash
+uv run python tools/synth_pipeline.py --out_root data/synthetic --num 200 --dpi 600 \
+	--config configs/base_config.yaml --ratio 0.3 --enable_elastic
+```
 
-### 训练与评估
-- [ ] 以入选骨干为基线，分别开启 `cbam` 与 `se` 进行对照；
-- [ ] 记录：训练损失、验证 IoU/mAP、推理时延/显存；
-- [ ] 观察注意力图是否集中在关键几何（边角/交点/突变）；
-- [ ] 若带来过拟合迹象（验证下降），尝试减弱注意力强度或减少插入位置。
+### 参数建议与经验
 
-### 验收标准（2.2）
-- [ ] 模型在开启注意力后稳定训练，无数值异常；
-- [ ] 指标不低于无注意力基线；若提升则量化收益；
-- [ ] 配置可一键关闭以回退。
+- 渲染 DPI：600–900 通常足够，图形极细时可提高到 1200（注意磁盘与 IO）。
+- 混采比例 synthetic.ratio：
+	- 数据少（<500 张）可取 0.3–0.5；
+	- 数据中等（500–2000 张）建议 0.2–0.3；
+	- 数据多（>2000 张）建议 0.1–0.2 以免分布偏移。
+- Elastic 强度：从 alpha=40, sigma=6 开始；若描述子对局部形变敏感，可小步上调 alpha 或 prob。
 
-### 风险与回滚（2.2）
-- 注意力导致过拟合或梯度不稳 → 降低 reduction、减少插入点、启用正则；
-- 推理时延上升明显 → 对注意力路径进行轻量化（如仅通道注意或更小 kernel）。
+### 质量检查清单（建议在首次跑通后执行）
 
----
+- 预览拼图无明显几何错位（orig/rot 对应边界对齐合理）。
+- 训练日志包含混采信息（real/syn 样本量、ratio、启停状态）。
+- 若开启 Elastic，训练初期 loss 无异常尖峰，长期收敛不劣于 baseline。
+- 渲染 PNG 与 GDS 在关键层上形态一致（优先使用 KLayout）。
 
-## 工程与度量配套
+### 常见问题与排查（FAQ）
 
-### 实验记录（建议）
-- 在 TensorBoard 中新增：
-	- `arch/backbone_name`、`arch/attention_type`（Text/Scalar）；
-	- `train/loss_total`、`eval/iou_metric`、`eval/map`；
-	- 推理指标：`infer/ms_per_image`、`infer/vram_gb`。
-
-### 对照报告模板（最小集）
-- 数据集与配置摘要（随机种子、批大小、学习率、图像尺寸）。
-- 三个骨干 + 注意力开关的结果表（速度/显存/IoU/mAP）。
-- 结论与落地选择（保留/关闭/待进一步实验）。
-
----
-
-## 排期与里程碑（建议）
-- M1（1 天）：骨干切换基础设施与通道适配层；单图 smoke 测试。
-- M2（2–3 天）：ResNet34 与 EfficientNet-B0 接入与跑通；
-- M3（1–2 天）：A/B 评测与结论；
-- M4（3–4 天）：注意力模块接入、训练对照、报告输出。
-
----
-
-## 相关参考
-- 源文档：`docs/feature_work.md` 第二部分（模型架构）
-- 阶段规划：`docs/todos/`
-- 配置系统：`configs/base_config.yaml`
+- klayout: command not found
+	- 方案A：安装系统级 KLayout 并确保可执行文件在 PATH；
+	- 方案B：暂用 gdstk+SVG 回退（外观可能略有差异）。
+- cairosvg 报错或 SVG 不生成
+	- 升级 `cairosvg` 与 `gdstk`；确保磁盘有写入权限；检查 `.svg` 是否被安全软件拦截。
+- gdstk 版本缺少 write_svg
+	- 尝试升级 gdstk；脚本已做 library 与 cell 双路径兼容，仍失败则优先使用 KLayout。
+- 训练集为空或样本过少
+	- 检查 `paths.layout_dir` 与 `synthetic.png_dir` 是否存在且包含 .png；ratio>0 但 syn 目录为空会自动回退仅真实数据。
 

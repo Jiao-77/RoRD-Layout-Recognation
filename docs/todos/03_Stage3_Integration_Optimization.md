@@ -82,6 +82,25 @@
     - [ ] 特征维度一致性检查
     - [ ] GPU/CPU 切换测试
 
+    #### 2.3 基准与评估补充（来自 NextStep 2.1 未完项）
+
+    - [ ] GPU 环境 A/B 基准（速度/显存）
+      - [ ] 使用 `tests/benchmark_backbones.py` 在 GPU 上复现（20 次，512×512），记录 ms 与 VRAM
+      - [ ] 追加结果到 `docs/description/Performance_Benchmark.md`
+
+    - [ ] GPU 环境 Attention A/B 基准（速度/显存）
+      - [ ] 使用 `tests/benchmark_attention.py` 在 GPU 上复现（10 次，512×512），覆盖 `places` 组合（`backbone_high`/`det_head`/`desc_head`）
+      - [ ] 记录平均耗时与 VRAM 峰值，追加摘要到 `docs/description/Performance_Benchmark.md`
+
+    - [ ] 三维网格基准（Backbone × Attention × Single/FPN）
+      - [ ] 使用 `tests/benchmark_grid.py` 在 GPU 上跑最小矩阵（例如 3×3，runs=5）
+      - [ ] 将 JSON 存入 `results/benchmark_grid_YYYYMMDD.json`，在性能文档中追加表格摘要并链接 JSON
+
+    - [ ] 真实数据集精度评估（IoU/mAP 与收敛曲线）
+      - [ ] 固定数据与超参，训练 5 个 epoch，记录 loss 曲线
+      - [ ] 在验证集上评估 IoU/mAP，并与 vgg16 基线对比
+      - [ ] 形成对照表与初步结论
+
 **验收标准**:
 - [ ] 所有测试用例通过
 - [ ] 推理结果符合预期维度和范围
@@ -142,6 +161,12 @@
   - [ ] 常见问题和解决方案
   - [ ] 日志查看方法
   - [ ] GPU 内存不足处理
+
+#### 3.4 预训练权重加载摘要（来自 NextStep 2.1 未完项）
+
+- [x] 在 `models/rord.py` 加载 `pretrained=true` 时，打印未命中层摘要
+  - [x] 记录：加载成功/跳过的层名数量
+  - [x] 提供简要输出（missing/unexpected keys，参数量统计）；实现：`models/rord.py::_summarize_pretrained_load`
 
 #### 3.2 编写配置参数文档
 
