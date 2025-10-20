@@ -64,6 +64,48 @@ PYTHONPATH=. uv run python tests/benchmark_grid.py \
 
 运行会同时输出控制台摘要并保存 JSON：`benchmark_grid.json`。
 
+## GPU 测试结果（A100）
+
+最后更新：2025-01-XX  
+设备：NVIDIA A100（CUDA）  
+输入：1×3×512×512 随机张量  
+重复次数：5（每组）  
+注意力放置位置：backbone_high
+
+> 说明：本测试在 A100 GPU 上进行，展示了不同骨干网络和注意力模块组合在 GPU 上的推理性能。
+
+### 结果汇总（ms）
+
+| Backbone           | Attention | Single Mean ± Std | FPN Mean ± Std |
+|--------------------|-----------|------------------:|---------------:|
+| vgg16              | none      | 4.53 ± 0.02       | 8.51 ± 0.002   |
+| vgg16              | se        | 3.80 ± 0.01       | 7.12 ± 0.004   |
+| vgg16              | cbam      | 3.73 ± 0.02       | 6.95 ± 0.09    |
+| resnet34           | none      | 2.32 ± 0.04       | 2.73 ± 0.007   |
+| resnet34           | se        | 2.33 ± 0.01       | 2.73 ± 0.004   |
+| resnet34           | cbam      | 2.46 ± 0.04       | 2.74 ± 0.004   |
+| efficientnet_b0    | none      | 3.69 ± 0.07       | 4.38 ± 0.02    |
+| efficientnet_b0    | se        | 3.76 ± 0.06       | 4.37 ± 0.03    |
+| efficientnet_b0    | cbam      | 3.99 ± 0.08       | 4.41 ± 0.02    |
+
+复现实验：
+
+```zsh
+PYTHONPATH=. uv run python tests/benchmark_grid.py \
+  --device cuda --image-size 512 --runs 5 \
+  --backbones vgg16 resnet34 efficientnet_b0 \
+  --attentions none se cbam \
+  --places backbone_high
+```
+
+### GPU 测试观察
+
+- **ResNet34 表现最佳**：在 GPU 上，ResNet34 在单尺度和 FPN 路径上都表现出色，单尺度约 2.3ms，FPN 约 2.7ms。
+- **VGG16 在 GPU 上仍有明显开销**：尽管在 GPU 上加速，VGG16 仍然是三种骨干中最慢的，单尺度约 3.7-4.5ms。
+- **EfficientNet-B0 表现中等**：在 GPU 上介于 VGG16 和 ResNet34 之间，单尺度约 3.7-4.0ms。
+- **注意力模块影响较小**：在 GPU 上，注意力模块（SE、CBAM）对性能的影响相对较小，FPN 路径上的差异尤其不明显。
+- **FPN 开销相对可控**：在 GPU 上，FPN 路径相比单尺度的额外开销较小，ResNet34 仅增加约 18%。
+
 ## 观察与解读
 - vgg16 明显最慢，FPN 额外的横向/上采样代价在 CPU 上更突出（>2×）。
 - resnet34 在单尺度上显著快于 vgg16，FPN 增幅较小（约 +25%）。
