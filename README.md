@@ -4,6 +4,29 @@
 ![Python Version](https://img.shields.io/badge/Python-3.12-blue)
 ![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg)
 
+## ⚡ Quick Start（含合成数据与H校验）
+
+```bash
+# 一键生成→渲染→预览→H校验→写回配置（开启合成混采与 Elastic）
+uv run python tools/synth_pipeline.py \
+  --out_root data/synthetic \
+  --num 50 \
+  --dpi 600 \
+  --config configs/base_config.yaml \
+  --ratio 0.3 \
+  --enable_elastic \
+  --validate_h --validate_n 6
+```
+
+提示：zsh 下使用反斜杠续行时，确保每行末尾只有一个 `\` 且下一行不要粘连参数（避免如 `6uv` 这样的粘连）。
+
+可选：为 KLayout 渲染指定图层配色/线宽/背景（示例：金属层绿色、过孔红色、黑底）
+```bash
+uv run python tools/layout2png.py \
+  --in data/synthetic/gds --out data/synthetic/png --dpi 800 \
+  --layermap '1/0:#00FF00,2/0:#FF0000' --line_width 2 --bgcolor '#000000'
+```
+
 ## 📖 描述
 
 本项目实现了 **RoRD (Rotation-Robust Descriptors)** 模型，这是一种先进的局部特征匹配方法，专用于集成电路（IC）版图的识别。
@@ -70,7 +93,9 @@ RoRD-Layout-Recognation/
 ├── match.py                      # 模板匹配脚本（FPN / 滑窗 + NMS）
 ├── tests/
 │   ├── benchmark_fpn.py          # FPN vs 滑窗性能对标
-│   └── benchmark_backbones.py    # 多骨干 A/B 前向基准
+│   ├── benchmark_backbones.py    # 多骨干 A/B 前向基准
+│   ├── benchmark_attention.py    # 注意力 none/se/cbam A/B 基准
+│   └── benchmark_grid.py         # 三维基准：Backbone × Attention × Single/FPN
 ├── config.py                     # 兼容旧流程的 YAML 读取 shim
 ├── pyproject.toml
 └── README.md
@@ -81,6 +106,11 @@ RoRD-Layout-Recognation/
 - **YAML 配置中心**：所有路径与超参数集中存放在 `configs/*.yaml`，通过 `utils.config_loader.load_config` 统一解析；CLI 的 `--config` 参数可切换实验配置，`to_absolute_path` 则保证相对路径相对配置文件解析。
 - **旧配置兼容**：`config.py` 现在仅作为兼容层，将 YAML 配置转换成原有的 Python 常量，便于逐步迁移历史代码。
 - **损失与数据解耦**：`losses.py` 汇总几何感知损失，`data/ic_dataset.py` 与 `utils/data_utils.py` 分离数据准备逻辑，便于扩展新的采样策略或损失项。
+
+# 5. 运行 A/B 基准（骨干、注意力、三维网格）
+PYTHONPATH=. uv run python tests/benchmark_backbones.py --device cpu --image-size 512 --runs 5
+PYTHONPATH=. uv run python tests/benchmark_attention.py --device cpu --image-size 512 --runs 10 --backbone resnet34 --places backbone_high desc_head
+PYTHONPATH=. uv run python tests/benchmark_grid.py --device cpu --image-size 512 --runs 3 --backbones vgg16 resnet34 efficientnet_b0 --attentions none se cbam --places backbone_high desc_head
 - **日志体系**：`logging` 配置节配合 TensorBoard 集成，`train.py`、`evaluate.py`、`match.py` 可统一写入 `log_dir/子任务/experiment_name`。
  - **模型配置扩展**：
    - `model.backbone.name`: `vgg16 | resnet34 | efficientnet_b0`
@@ -350,6 +380,7 @@ uv run python match.py --config configs/base_config.yaml --no_nms \
 可参考以下文档与脚本复现并查看最新结果：
 
 - CPU 多骨干 A/B 基准（512×512，5 次）：见 `docs/description/Performance_Benchmark.md`
+- 三维基准（Backbone × Attention × Single/FPN）：见 `docs/description/Performance_Benchmark.md` 与 `tests/benchmark_grid.py`
 - FPN vs 滑窗对标脚本：`tests/benchmark_fpn.py`
 - 多骨干 A/B 基准脚本：`tests/benchmark_backbones.py`
 
@@ -358,3 +389,91 @@ uv run python match.py --config configs/base_config.yaml --no_nms \
 ## 📄 许可协议
 
 本项目根据 [Apache License 2.0](LICENSE.txt) 授权。
+
+---
+
+## 🧪 合成数据一键流程与常见问题
+
+### 一键命令
+```bash
+uv run python tools/generate_synthetic_layouts.py --out_dir data/synthetic/gds --num 200 --seed 42
+uv run python tools/layout2png.py --in data/synthetic/gds --out data/synthetic/png --dpi 600
+uv run python tools/preview_dataset.py --dir data/synthetic/png --out preview.png --n 8 --elastic
+uv run python train.py --config configs/base_config.yaml
+```
+
+或使用单脚本一键执行（含配置写回）：
+```bash
+uv run python tools/synth_pipeline.py --out_root data/synthetic --num 200 --dpi 600 \
+  --config configs/base_config.yaml --ratio 0.3 --enable_elastic
+```
+
+### YAML 关键片段
+```yaml
+synthetic:
+  enabled: true
+  png_dir: data/synthetic/png
+  ratio: 0.3
+
+augment:
+  elastic:
+    enabled: true
+    alpha: 40
+    sigma: 6
+    alpha_affine: 6
+    prob: 0.3
+```
+
+### 参数建议
+- DPI：600–900；图形极细时可到 1200（注意磁盘占用与 IO）。
+- ratio：数据少取 0.3–0.5；中等 0.2–0.3；数据多 0.1–0.2。
+- Elastic：alpha=40, sigma=6, prob=0.3 为安全起点。
+
+### FAQ
+- 找不到 `klayout`：安装系统级 KLayout 并加入 PATH；或使用回退（gdstk+SVG）。
+- `cairosvg`/`gdstk` 报错：升级版本、确认写权限、检查输出目录存在。
+- 训练集为空：检查 `paths.layout_dir` 与 `synthetic.png_dir` 是否存在且包含 .png；若 syn 目录为空将自动仅用真实数据。
+
+---
+
+## 🧪 合成数据管线与可视化
+
+### 1) 生成合成 GDS
+```bash
+uv run python tools/generate_synthetic_layouts.py --out_dir data/synthetic/gds --num 200 --seed 42
+```
+
+### 2) 批量转换 GDS → PNG
+```bash
+uv run python tools/layout2png.py --in data/synthetic/gds --out data/synthetic/png --dpi 600
+```
+
+若本机未安装 KLayout，将自动回退到 gdstk+SVG 路径；图像外观可能与 KLayout 有差异。
+
+### 3) 开启训练混采
+在 `configs/base_config.yaml` 中设置：
+```yaml
+synthetic:
+  enabled: true
+  png_dir: data/synthetic/png
+  ratio: 0.3
+```
+
+### 4) 预览训练对（目检增强/H 一致性）
+```bash
+uv run python tools/preview_dataset.py --dir data/synthetic/png --out preview.png --n 8 --elastic
+```
+
+### 5) 开启/调整 Elastic 变形
+```yaml
+augment:
+  elastic:
+    enabled: true
+    alpha: 40
+    sigma: 6
+    alpha_affine: 6
+    prob: 0.3
+  photometric:
+    brightness_contrast: true
+    gauss_noise: true
+```

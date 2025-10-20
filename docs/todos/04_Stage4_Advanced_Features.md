@@ -218,6 +218,41 @@
 
 ---
 
+### 4. 注意力机制集成（来自 NextStep 2.2）
+
+**目标**: 在骨干高层与头部前集成 CBAM / SE，并量化收益
+
+#### 4.1 模块实现与插桩
+- [ ] 实现 `CBAM` 与 `SEBlock`（或迁移可靠实现）
+- [ ] 在 `models/rord.py` 通过配置插拔：`attention.enabled/type/places`
+- [ ] 确保 forward 尺寸不变，默认关闭可回退
+
+#### 4.2 训练与评估
+- [ ] 选择入选骨干为基线，分别开启 `cbam` 与 `se`
+- [ ] 记录训练损失、验证 IoU/mAP、推理时延/显存
+- [ ] 可选：导出可视化注意力图
+
+**验收标准**:
+- [ ] 训练稳定，无数值异常
+- [ ] 指标不低于无注意力基线；若提升则量化收益
+- [ ] 配置可一键关闭以回退
+
+#### 4.3 扩展模块与插入位置消融
+- [ ] 扩展更多注意力模块：ECA、SimAM、CoordAttention、SKNet
+  - [ ] 在 `models/rord.py` 实现统一接口与注册表
+  - [ ] 在 `configs/base_config.yaml` 增加可选项说明
+- [ ] 插入位置消融
+  - [ ] 仅 `backbone_high` / 仅 `det_head` / 仅 `desc_head` / 组合
+  - [ ] 使用 `tests/benchmark_attention.py` 统一基准，记录 Single/FPN 时延与 VRAM
+  - [ ] 在 `docs/description/Performance_Benchmark.md` 增加“注意力插入位置”小节
+
+**验收标准**:
+- [ ] 所有新增模块 forward 通过，尺寸/类型与现有路径一致
+- [ ] 基准结果可复现并写入文档
+- [ ] 给出速度-精度权衡建议
+
+---
+
 ## 🔄 实施流程
 
 ### 第 1 周: 实验管理集成

@@ -1,5 +1,41 @@
 # 后续工作
 
+## 新增功能汇总（2025-10-20）
+
+- 数据增强：集成 `albumentations` 的 ElasticTransform（配置在 `augment.elastic`），并保持几何配对的 H 正确性。
+- 合成数据：新增 `tools/generate_synthetic_layouts.py`（GDS 生成）与 `tools/layout2png.py`（GDS→PNG 批量转换）。
+- 训练混采：`train.py` 接入真实/合成混采，按 `synthetic.ratio` 使用加权采样；验证集仅使用真实数据。
+- 可视化：`tools/preview_dataset.py` 快速导出训练对的拼图图，便于人工质检。
+
+## 立即可做的小改进
+
+- 在 `layout2png.py` 增加图层配色与线宽配置（读取 layermap 或命令行参数）。
+- 为 `ICLayoutTrainingDataset` 添加随机裁剪失败时的回退逻辑（极小图像）。
+- 增加最小单元测试：验证 ElasticTransform 下 H 的 warp 一致性（采样角点/网格点）。
+- 在 README 增加一键命令合集（生成合成数据 → 渲染 → 预览 → 训练）。
+
+## 一键流程与排查（摘要）
+
+**一键命令**：
+```bash
+uv run python tools/generate_synthetic_layouts.py --out_dir data/synthetic/gds --num 200 --seed 42
+uv run python tools/layout2png.py --in data/synthetic/gds --out data/synthetic/png --dpi 600
+uv run python tools/preview_dataset.py --dir data/synthetic/png --out preview.png --n 8 --elastic
+uv run python train.py --config configs/base_config.yaml
+```
+
+或使用单脚本一键执行（含配置写回）：
+```bash
+uv run python tools/synth_pipeline.py --out_root data/synthetic --num 200 --dpi 600 \
+  --config configs/base_config.yaml --ratio 0.3 --enable_elastic
+```
+
+**参数建议**：DPI=600–900；ratio=0.2–0.3（首训）；Elastic 从 alpha=40/sigma=6 起步。
+
+**FAQ**：
+- 找不到 klayout：安装后确保在 PATH；无则使用回退渲染（外观可能有差异）。
+- SVG/PNG 未生成：检查写权限与版本（cairosvg/gdstk），或优先用 KLayout。
+
 本文档整合了 RoRD 项目的优化待办清单和训练需求，用于规划未来的开发和实验工作。
 
 ---
@@ -12,17 +48,69 @@
 
 > *目标：提升模型的鲁棒性和泛化能力，减少对大量真实数据的依赖。*
 
-- [ ] **引入弹性变形 (Elastic Transformations)**
+- [x] **引入弹性变形 (Elastic Transformations)**
   - **✔️ 价值**: 模拟芯片制造中可能出现的微小物理形变，使模型对非刚性变化更鲁棒。
   - **📝 执行方案**:
     1. 添加 `albumentations` 库作为项目依赖。
     2. 在 `train.py` 的 `ICLayoutTrainingDataset` 类中，集成 `A.ElasticTransform` 到数据增强管道中。
-- [ ] **创建合成版图数据生成器**
+- [x] **创建合成版图数据生成器**
   - **✔️ 价值**: 解决真实版图数据获取难、数量少的问题，通过程序化生成大量多样化的训练样本。
   - **📝 执行方案**:
     1. 创建一个新脚本，例如 `tools/generate_synthetic_layouts.py`。
     2. 利用 `gdstk` 库 编写函数，程序化地生成包含不同尺寸、密度和类型标准单元的 GDSII 文件。
     3. 结合 `tools/layout2png.py` 的逻辑，将生成的版图批量转换为 PNG 图像，用于扩充训练集。
+
+- [ ] **基于扩散生成的版图数据生成器（研究型）**
+  - **🎯 目标**: 使用扩散模型（Diffusion）生成具备“曼哈顿几何特性”的版图切片（raster PNG），作为现有程序化合成的补充来源，进一步提升数据多样性与风格覆盖。
+  - **📦 产物**:
+    - 推理脚本（计划）: `tools/diffusion/sample_layouts.py`
+    - 训练脚本（计划）: `tools/diffusion/train_layout_diffusion.py`
+    - 数据集打包与统计工具（计划）: `tools/diffusion/prepare_patch_dataset.py`
+  - **🧭 范围界定**:
+    - 优先生成单层的二值/灰度光栅图像（256–512 像素方形 patch）。
+    - 短期不追求多层/DRC 严格约束的工业可制造性；定位为数据增强来源，而非版图设计替代。
+  - **🛤️ 技术路线**:
+    - 路线 A（首选，工程落地快）: 基于 HuggingFace diffusers 的 Latent Diffusion/Stable Diffusion 微调；输入为 1 通道灰度（训练时复制到 3 通道或改 UNet 首层），输出为版图样式图像。
+    - 路线 B（结构引导）: 加入 ControlNet/T2I-Adapter 条件，如 Sobel/Canny/直方结构图、粗草图（Scribble）、程序化几何草图，以控制生成的总体连通性与直角占比。
+    - 路线 C（两阶段）: 先用程序化生成器输出“草图/骨架”（低细节），再用扩散模型进行“风格化/细化”。
+  - **🧱 数据表示与条件**:
+    - Raster 表示：PNG（二值/灰度），可预生成条件图：Sobel、Canny、距离变换、形态学骨架等。
+    - 条件输入建议：`[image (target-like), edge_map, skeleton]` 的任意子集；PoC 以 edge_map 为主。
+  - **🧪 训练配置（建议起点）**:
+    - 图像尺寸：256（PoC），后续 384/512。
+    - 批大小：8–16（依显存），学习率 1e-4，训练步数 100k–300k。
+    - 数据来源：`data/**/png` 聚合 + 程序合成数据 `data/synthetic/png`；采样时按风格/密度分层均衡。
+    - 预处理：随机裁剪非空 patch、二值阈值均衡、弱摄影增强（噪声/对比度）控制在小幅度范围。
+  - **🧰 推理与后处理**:
+    - 采样参数：采样步数 30–100、guidance scale 3–7、seed 固定以便复现。
+    - 后处理：Otsu/固定阈值二值化，形态学开闭/细化，断点连接（morphology bridge），可选矢量化（`gdstk` 轮廓化）回写 GDS。
+  - **📈 评估指标**:
+    - 结构统计对齐：水平/垂直边比例、连通组件面积分布、线宽分布、密度直方图与真实数据 KL 距离。
+    - 规则近似性：形态学开闭后碎片率、连通率、冗余孤立像素占比。
+    - 训练收益：将扩散样本混入 `train.py`，对 IoU/mAP/收敛轮数的提升幅度（与仅程序合成相比）。
+  - **🔌 与现有管线集成**:
+    - 在 `tools/synth_pipeline.py` 增加 `--use_diffusion` 或 `--diffusion_dir`，将扩散生成的 PNG 目录并入训练数据目录。
+    - 配置建议新增：
+      ```yaml
+      synthetic:
+        diffusion:
+          enabled: false
+          png_dir: data/synthetic_diff/png
+          ratio: 0.1   # 与真实/程序合成的混采比例
+      ```
+    - 预览与质检：重用 `tools/preview_dataset.py`，并用 `tools/validate_h_consistency.py` 跳过 H 检查（扩散输出无严格几何配对），改用结构统计工具（后续补充）。
+  - **🗓️ 里程碑**:
+    1. 第 1 周：数据准备与统计、PoC（预训练 SD + ControlNet-Edge 的小规模微调，256 尺寸）。
+    2. 第 2–3 周：扩大训练（≥50k patch），加入骨架/距离变换条件，完善后处理。
+    3. 第 4 周：与训练管线集成（混采/可视化），对比“仅程序合成 vs 程序合成+扩散”的增益。
+    4. 第 5 周：文档、示例权重与一键脚本（可选导出 ONNX/TensorRT 推理）。
+  - **⚠️ 风险与缓解**:
+    - 结构失真/非曼哈顿：增强条件约束（ControlNet），提高形态学后处理强度；两阶段（草图→细化）。
+    - 模式崩塌/多样性不足：分层采样、数据重采样、EMA、风格/密度条件编码。
+    - 训练数据不足：先用程序合成预训练，再混入少量真实数据微调。
+  - **📚 参考与依赖**:
+    - 依赖：`diffusers`, `transformers`, `accelerate`, `albumentations`, `opencv-python`, `gdstk`
+    - 参考：Latent Diffusion、Stable Diffusion、ControlNet、T2I-Adapter 等论文与开源实现
 
 ### 二、 模型架构 (Model Architecture)
 
@@ -40,11 +128,19 @@
     - 代码：`models/rord.py`
     - 基准：`tests/benchmark_backbones.py`
     - 文档：`docs/description/Backbone_FPN_Test_Change_Notes.md`, `docs/description/Performance_Benchmark.md`
-- [ ] **集成注意力机制 (Attention Mechanism)**
-  - **✔️ 价值**: 引导模型自动关注版图中的关键几何结构（如边角、交点），忽略大面积的空白或重复区域，提升特征质量。
-  - **📝 执行方案**:
-    1. 寻找一个可靠的注意力模块实现，如 CBAM 或 SE-Net。
-    2. 在 `models/rord.py` 中，将该模块插入到 `self.backbone` 和两个 `head` 之间。
+- [x] **集成注意力机制 (Attention Mechanism)**
+  - **✔️ 价值**: 引导模型关注关键几何结构、弱化冗余区域，提升特征质量与匹配稳定性。
+  - **✅ 当前进展（2025-10-20）**:
+    - 已集成可切换的注意力模块：`SE` 与 `CBAM`；支持通过 `model.attention.enabled/type/places` 配置开启与插入位置（`backbone_high`/`det_head`/`desc_head`）。
+    - 已完成 CPU A/B 基准（none/se/cbam，resnet34，places=backbone_high+desc_head），详见 `docs/description/Performance_Benchmark.md`；脚本：`tests/benchmark_attention.py`。
+  - **📝 后续动作**:
+    1. 扩展更多模块：ECA、SimAM、CoordAttention、SKNet，并保持统一接口与配置。
+    2. 进行插入位置消融（仅 backbone_high / det_head / desc_head / 组合），在 GPU 上复测速度与显存峰值。
+    3. 在真实数据上评估注意力开/关的 IoU/mAP 与收敛差异。
+  - **参考**:
+    - 代码：`models/rord.py`
+    - 基准：`tests/benchmark_attention.py`, `tests/benchmark_grid.py`
+    - 文档：`docs/description/Performance_Benchmark.md`
 
 ### 三、 训练与损失函数 (Training & Loss Function)
 
@@ -181,6 +277,24 @@
     --output-file export.md
   ```
 
+### ✅ 三维基准对比（Backbone × Attention × Single/FPN）
+
+- **文件**: `tests/benchmark_grid.py` ✅，JSON 输出：`benchmark_grid.json`
+- **功能**:
+  - 遍历 `backbone × attention` 组合（当前：vgg16/resnet34/efficientnet_b0 × none/se/cbam）
+  - 统计单尺度与 FPN 前向的平均耗时与标准差
+  - 控制台摘要 + JSON 结果落盘
+- **使用**:
+  ```bash
+  PYTHONPATH=. uv run python tests/benchmark_grid.py \
+    --device cpu --image-size 512 --runs 3 \
+    --backbones vgg16 resnet34 efficientnet_b0 \
+    --attentions none se cbam \
+    --places backbone_high desc_head
+  ```
+- **结果**:
+  - 已将 CPU（512×512，runs=3）结果写入 `docs/description/Performance_Benchmark.md` 的“三维基准”表格，原始数据位于仓库根目录 `benchmark_grid.json`。
+
 ### 📚 新增文档
 
 | 文档 | 大小 | 说明 |
@@ -263,6 +377,8 @@
 | | 全面评估指标 | ✅ | 2025-10-19 |
 | **新增工作** | 性能基准测试 | ✅ | 2025-10-20 |
 | | TensorBoard 导出工具 | ✅ | 2025-10-20 |
+| **二. 模型架构** | 注意力机制（SE/CBAM 基线） | ✅ | 2025-10-20 |
+| **新增工作** | 三维基准对比（Backbone×Attention×Single/FPN） | ✅ | 2025-10-20 |
 
 ### 未完成的工作项（可选优化）
 
@@ -270,8 +386,52 @@
 |------|--------|--------|------|
 | **一. 数据策略与增强** | 弹性变形增强 | 🟡 低 | 便利性增强 |
 | | 合成版图生成器 | 🟡 低 | 数据增强 |
-| **二. 模型架构** | 现代骨干网络 | 🟠 中 | 性能优化 |
-| | 注意力机制 | 🟠 中 | 性能优化 |
+| | 基于扩散的版图生成器 | 🟠 中 | 研究型：引入结构条件与形态学后处理，作为数据多样性来源 |
+
+---
+
+## 扩散生成集成的实现说明（新增）
+
+- 配置新增节点（已添加到 `configs/base_config.yaml`）:
+  ```yaml
+  synthetic:
+    enabled: false
+    png_dir: data/synthetic/png
+    ratio: 0.0
+    diffusion:
+      enabled: false
+      png_dir: data/synthetic_diff/png
+      ratio: 0.0
+  ```
+
+- 训练混采（已实现于 `train.py`）:
+  - 支持三源混采：真实数据 + 程序合成 (`synthetic`) + 扩散合成 (`synthetic.diffusion`)。
+  - 目标比例：`real = 1 - (syn_ratio + diff_ratio)`；使用 `WeightedRandomSampler` 近似。
+  - 验证集仅使用真实数据，避免评估偏移。
+
+- 一键管线扩展（已实现于 `tools/synth_pipeline.py`）:
+  - 新增 `--diffusion_dir` 参数：将指定目录的 PNG 并入配置文件的 `synthetic.diffusion.png_dir` 并开启 `enabled=true`。
+  - 不自动采样扩散图片（避免引入新依赖），仅做目录集成；后续可在该脚本中串联 `tools/diffusion/sample_layouts.py`。
+
+- 新增脚本骨架（`tools/diffusion/`）:
+  - `prepare_patch_dataset.py`: 从现有 PNG 构建 patch 数据集与条件图（CLI 骨架 + TODO）。
+  - `train_layout_diffusion.py`: 微调扩散模型的训练脚本（CLI 骨架 + TODO）。
+  - `sample_layouts.py`: 使用已训练权重进行采样输出 PNG（CLI 骨架 + TODO）。
+
+- 使用建议：
+  1) 将扩散采样得到的 PNG 放入某目录，例如 `data/synthetic_diff/png`。
+  2) 运行：
+     ```bash
+     uv run python tools/synth_pipeline.py \
+       --out_root data/synthetic \
+       --num 200 --dpi 600 \
+       --config configs/base_config.yaml \
+       --ratio 0.3 \
+       --diffusion_dir data/synthetic_diff/png
+     ```
+  3) 在 YAML 中按需设置 `synthetic.diffusion.ratio`（例如 0.1），训练时即自动按比例混采。
+
+| **二. 模型架构** | 更多注意力模块（ECA/SimAM/CoordAttention/SKNet） | 🟠 中 | 扩展与消融 |
 | **三. 训练与损失** | 损失加权自适应 | 🟠 中 | 训练优化 |
 | | 困难样本采样 | 🟡 低 | 训练优化 |
 

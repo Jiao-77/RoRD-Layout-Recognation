@@ -51,3 +51,24 @@ paths:
   val_ann_dir: "path/to/val/annotations"
   template_dir: "path/to/templates"
   model_path: "path/to/save/model_final.pth"
+
+# 数据增强与合成数据配置（可选）
+augment:
+  elastic:
+    enabled: false
+    alpha: 40
+    sigma: 6
+    alpha_affine: 6
+    prob: 0.3
+  photometric:
+    brightness_contrast: true
+    gauss_noise: true
+
+synthetic:
+  enabled: false
+  png_dir: "data/synthetic/png"
+  ratio: 0.0  # 0~1，训练时混合的合成样本比例
+  diffusion:
+    enabled: false
+    png_dir: "data/synthetic_diff/png"
+    ratio: 0.0  # 0~1，训练时混合的扩散样本比例
