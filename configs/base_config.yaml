@@ -64,6 +64,33 @@ augment:
     brightness_contrast: true
     gauss_noise: true
 
+# 数据来源配置
+data_sources:
+  # 原始真实数据
+  real:
+    enabled: true
+    ratio: 1.0  # 默认使用100%真实数据
+
+  # 扩散生成数据
+  diffusion:
+    enabled: false
+    model_dir: "models/diffusion"
+    png_dir: "data/diffusion_generated"
+    ratio: 0.0  # 0~1，训练时混合的扩散样本比例
+    # 扩散模型训练参数
+    training:
+      epochs: 100
+      batch_size: 8
+      lr: 1e-4
+      image_size: 256
+      timesteps: 1000
+      augment: true
+    # 扩散生成参数
+    generation:
+      num_samples: 200
+      timesteps: 1000
+
+# 程序化合成数据（已弃用，保留用于兼容性）
 synthetic:
   enabled: false
   png_dir: "data/synthetic/png"

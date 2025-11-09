@@ -105,35 +105,21 @@ def main(args):
         albu_params=albu_params,
     )
 
-    # 读取合成数据配置（程序化 + 扩散）
-    syn_cfg = cfg.get("synthetic", {})
-    syn_enabled = bool(syn_cfg.get("enabled", False))
-    syn_ratio = float(syn_cfg.get("ratio", 0.0))
-    syn_dir = syn_cfg.get("png_dir", None)
+    # 读取新的数据源配置
+    data_sources_cfg = cfg.get("data_sources", {})
 
-    syn_dataset = None
-    if syn_enabled and syn_dir:
-        syn_dir_path = Path(to_absolute_path(syn_dir, config_dir))
-        if syn_dir_path.exists():
-            syn_dataset = ICLayoutTrainingDataset(
-                syn_dir_path.as_posix(),
-                patch_size=patch_size,
-                transform=transform,
-                scale_range=scale_range,
-                use_albu=use_albu,
-                albu_params=albu_params,
-            )
-            if len(syn_dataset) == 0:
-                syn_dataset = None
-        else:
-            logger.warning(f"合成数据目录不存在，忽略: {syn_dir_path}")
-            syn_enabled = False
+    # 真实数据配置
+    real_cfg = data_sources_cfg.get("real", {})
+    real_enabled = bool(real_cfg.get("enabled", True))
+    real_ratio = float(real_cfg.get("ratio", 1.0))
 
-    # 扩散生成数据配置
-    diff_cfg = syn_cfg.get("diffusion", {}) if syn_cfg else {}
+    # 扩散数据配置
+    diff_cfg = data_sources_cfg.get("diffusion", {})
     diff_enabled = bool(diff_cfg.get("enabled", False))
     diff_ratio = float(diff_cfg.get("ratio", 0.0))
     diff_dir = diff_cfg.get("png_dir", None)
+
+    # 构建扩散数据集
     diff_dataset = None
     if diff_enabled and diff_dir:
         diff_dir_path = Path(to_absolute_path(diff_dir, config_dir))
@@ -148,15 +134,15 @@ def main(args):
             )
             if len(diff_dataset) == 0:
                 diff_dataset = None
+                logger.warning("扩散数据集为空，忽略扩散数据")
         else:
             logger.warning(f"扩散数据目录不存在，忽略: {diff_dir_path}")
             diff_enabled = False
 
     logger.info(
-        "真实数据集大小: %d%s%s" % (
+        "真实数据集大小: %d%s" % (
             len(real_dataset),
-            f", 合成(程序)数据集: {len(syn_dataset)}" if syn_dataset else "",
-            f", 合成(扩散)数据集: {len(diff_dataset)}" if diff_dataset else "",
+            f", 扩散生成数据集: {len(diff_dataset)}" if diff_dataset else "",
         )
     )
 
@@ -165,7 +151,7 @@ def main(args):
     val_size = max(len(real_dataset) - train_size, 1)
     real_train_dataset, val_dataset = torch.utils.data.random_split(real_dataset, [train_size, val_size])
 
-    # 训练集：可与合成数据集合并（程序合成 + 扩散）
+    # 训练集：可与扩散生成数据集合并
     datasets = [real_train_dataset]
     weights = []
     names = []
@@ -173,11 +159,8 @@ def main(args):
     n_real = len(real_train_dataset)
     n_real = max(n_real, 1)
     names.append("real")
-    # 程序合成
-    if syn_dataset is not None and syn_enabled and syn_ratio > 0.0:
-        datasets.append(syn_dataset)
-        names.append("synthetic")
-    # 扩散合成
+
+    # 扩散生成数据
     if diff_dataset is not None and diff_enabled and diff_ratio > 0.0:
         datasets.append(diff_dataset)
         names.append("diffusion")
@@ -186,38 +169,38 @@ def main(args):
         mixed_train_dataset = ConcatDataset(datasets)
         # 计算各源样本数
         counts = [len(real_train_dataset)]
-        if syn_dataset is not None and syn_enabled and syn_ratio > 0.0:
-            counts.append(len(syn_dataset))
         if diff_dataset is not None and diff_enabled and diff_ratio > 0.0:
             counts.append(len(diff_dataset))
-        # 期望比例：real = 1 - (syn_ratio + diff_ratio)
-        target_real = max(0.0, 1.0 - (syn_ratio + diff_ratio))
+
+        # 期望比例：real = 1 - diff_ratio
+        target_real = max(0.0, 1.0 - diff_ratio)
         target_ratios = [target_real]
-        if syn_dataset is not None and syn_enabled and syn_ratio > 0.0:
-            target_ratios.append(syn_ratio)
         if diff_dataset is not None and diff_enabled and diff_ratio > 0.0:
             target_ratios.append(diff_ratio)
+
         # 构建每个样本的权重
         per_source_weights = []
         for count, ratio in zip(counts, target_ratios):
             count = max(count, 1)
             per_source_weights.append(ratio / count)
+
         # 展开到每个样本
         weights = []
         idx = 0
         for count, w in zip(counts, per_source_weights):
             weights += [w] * count
             idx += count
+
         sampler = WeightedRandomSampler(weights, num_samples=len(mixed_train_dataset), replacement=True)
         train_dataloader = DataLoader(mixed_train_dataset, batch_size=batch_size, sampler=sampler, num_workers=4)
         logger.info(
-            f"启用混采: real={target_real:.2f}, syn={syn_ratio:.2f}, diff={diff_ratio:.2f}; 总样本={len(mixed_train_dataset)}"
+            f"启用混采: real={target_real:.2f}, diff={diff_ratio:.2f}; 总样本={len(mixed_train_dataset)}"
         )
         if writer:
             writer.add_text(
                 "dataset/mix",
-                f"enabled=true, ratios: real={target_real:.2f}, syn={syn_ratio:.2f}, diff={diff_ratio:.2f}; "
-                f"counts: real_train={len(real_train_dataset)}, syn={len(syn_dataset) if syn_dataset else 0}, diff={len(diff_dataset) if diff_dataset else 0}"
+                f"enabled=true, ratios: real={target_real:.2f}, diff={diff_ratio:.2f}; "
+                f"counts: real_train={len(real_train_dataset)}, diff={len(diff_dataset) if diff_dataset else 0}"
             )
     else:
         train_dataloader = DataLoader(real_train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)

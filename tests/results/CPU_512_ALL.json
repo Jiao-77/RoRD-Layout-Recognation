@@ -1,0 +1,92 @@
+[
+  {
+    "backbone": "vgg16",
+    "attention": "none",
+    "places": "backbone_high",
+    "single_ms_mean": 39.18452262878418,
+    "single_ms_std": 12.281795573990802,
+    "fpn_ms_mean": 69.40970420837402,
+    "fpn_ms_std": 3.992836017183183,
+    "runs": 5
+  },
+  {
+    "backbone": "vgg16",
+    "attention": "se",
+    "places": "backbone_high",
+    "single_ms_mean": 355.5804252624512,
+    "single_ms_std": 128.52460541869158,
+    "fpn_ms_mean": 90.53478240966797,
+    "fpn_ms_std": 26.290963555717845,
+    "runs": 5
+  },
+  {
+    "backbone": "vgg16",
+    "attention": "cbam",
+    "places": "backbone_high",
+    "single_ms_mean": 403.49555015563965,
+    "single_ms_std": 135.76611430211202,
+    "fpn_ms_mean": 70.25303840637207,
+    "fpn_ms_std": 2.9701052556946683,
+    "runs": 5
+  },
+  {
+    "backbone": "resnet34",
+    "attention": "none",
+    "places": "backbone_high",
+    "single_ms_mean": 23.61011505126953,
+    "single_ms_std": 5.150779912326564,
+    "fpn_ms_mean": 41.643476486206055,
+    "fpn_ms_std": 25.070309541922704,
+    "runs": 5
+  },
+  {
+    "backbone": "resnet34",
+    "attention": "se",
+    "places": "backbone_high",
+    "single_ms_mean": 247.26028442382812,
+    "single_ms_std": 41.75558238514015,
+    "fpn_ms_mean": 28.083133697509766,
+    "fpn_ms_std": 2.567059505914933,
+    "runs": 5
+  },
+  {
+    "backbone": "resnet34",
+    "attention": "cbam",
+    "places": "backbone_high",
+    "single_ms_mean": 266.7567253112793,
+    "single_ms_std": 56.60780910635171,
+    "fpn_ms_mean": 26.839590072631836,
+    "fpn_ms_std": 1.4675583651754307,
+    "runs": 5
+  },
+  {
+    "backbone": "efficientnet_b0",
+    "attention": "none",
+    "places": "backbone_high",
+    "single_ms_mean": 1788.9115810394287,
+    "single_ms_std": 71.41739570876662,
+    "fpn_ms_mean": 1716.4819717407227,
+    "fpn_ms_std": 133.11243499378875,
+    "runs": 5
+  },
+  {
+    "backbone": "efficientnet_b0",
+    "attention": "se",
+    "places": "backbone_high",
+    "single_ms_mean": 2014.0462398529053,
+    "single_ms_std": 75.56771639088022,
+    "fpn_ms_mean": 1673.0663299560547,
+    "fpn_ms_std": 145.24196965644995,
+    "runs": 5
+  },
+  {
+    "backbone": "efficientnet_b0",
+    "attention": "cbam",
+    "places": "backbone_high",
+    "single_ms_mean": 2138.7922286987305,
+    "single_ms_std": 86.92280440177618,
+    "fpn_ms_mean": 1825.8434295654297,
+    "fpn_ms_std": 194.8450216543579,
+    "runs": 5
+  }
+]
