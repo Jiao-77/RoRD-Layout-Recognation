@@ -233,9 +233,8 @@ class ManhattanAwareUNet(nn.Module):
             nn.Conv2d(32, out_channels, 3, padding=1)
         )
 
-        # 时间融合层
+        # 时间融合层 - 与编码器输出通道数匹配
         self.time_fusion = nn.ModuleList([
-            nn.Linear(time_dim, 64),
             nn.Linear(time_dim, 128),
             nn.Linear(time_dim, 256),
             nn.Linear(time_dim, 512),
