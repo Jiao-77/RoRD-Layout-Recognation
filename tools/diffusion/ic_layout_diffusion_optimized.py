@@ -242,12 +242,12 @@ class ManhattanAwareUNet(nn.Module):
             nn.SiLU(),
         )
 
-        # 解码器 - 修复通道数计算
+        # 解码器 - 正确的通道数计算
         self.decoder = nn.ModuleList([
             self._make_decoder_block(512, 256),      # middle (512) -> 256
-            self._make_decoder_block(512, 128),      # 256+256(skip) -> 128
-            self._make_decoder_block(256, 64),       # 128+128(skip) -> 64
-            self._make_decoder_block(128, 64),       # 64+64(skip) -> 64
+            self._make_decoder_block(256, 128),      # decoder output (256) -> 128
+            self._make_decoder_block(128, 64),       # decoder output (128) -> 64
+            self._make_decoder_block(64, 64),        # decoder output (64) -> 64
         ])
 
         # 输出层 - 修复输入通道数
