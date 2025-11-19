@@ -226,7 +226,7 @@ class ManhattanAwareUNet(nn.Module):
         )
 
         # 编码器通道配置
-        encoder_channels = [64, 128, 256, 512]  # 修正：减少通道数避免过拟合
+        encoder_channels = [64, 128, 256, 512]  # 4个层级
         self.encoder = nn.ModuleList([
             self._make_block(encoder_channels[i], encoder_channels[i+1], stride=2 if i > 0 else 1)
             for i in range(len(encoder_channels)-1)
@@ -242,12 +242,11 @@ class ManhattanAwareUNet(nn.Module):
             nn.SiLU(),
         )
 
-        # 解码器 - 正确的通道数计算
+        # 解码器 - 匹配编码器的数量
         self.decoder = nn.ModuleList([
             self._make_decoder_block(512, 256),      # middle (512) -> 256
             self._make_decoder_block(256, 128),      # decoder output (256) -> 128
             self._make_decoder_block(128, 64),       # decoder output (128) -> 64
-            self._make_decoder_block(64, 64),        # decoder output (64) -> 64
         ])
 
         # 输出层 - 修复输入通道数
