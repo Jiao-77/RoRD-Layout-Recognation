@@ -172,6 +172,19 @@ class RoRD(nn.Module):
                 self._summarize_pretrained_load(res, models.ResNet34_Weights.DEFAULT, "resnet34")
             else:
                 res = models.resnet34(weights=None)
+            # 修改第一层卷积以支持 1 通道灰度输入
+            old_conv1 = res.conv1
+            res.conv1 = nn.Conv2d(
+                1, 64, kernel_size=old_conv1.kernel_size,
+                stride=old_conv1.stride, padding=old_conv1.padding,
+                bias=old_conv1.bias is not None,
+                dilation=old_conv1.dilation, groups=old_conv1.groups
+            )
+            # 复制权重：将 3 通道的权重沿通道维度平均，转换为 1 通道
+            with torch.no_grad():
+                res.conv1.weight.copy_(old_conv1.weight.mean(dim=1, keepdim=True))
+                if old_conv1.bias is not None:
+                    res.conv1.bias.copy_(old_conv1.bias)
             self.backbone = nn.Sequential(
                 res.conv1, res.bn1, res.relu, res.maxpool,
                 res.layer1, res.layer2, res.layer3, res.layer4,
@@ -187,6 +200,19 @@ class RoRD(nn.Module):
                 self._summarize_pretrained_load(eff, models.EfficientNet_B0_Weights.DEFAULT, "efficientnet_b0")
             else:
                 eff = models.efficientnet_b0(weights=None)
+            # 修改第一层卷积以支持 1 通道灰度输入
+            old_conv1 = eff.features[0][0]
+            eff.features[0][0] = nn.Conv2d(
+                1, 32, kernel_size=old_conv1.kernel_size,
+                stride=old_conv1.stride, padding=old_conv1.padding,
+                bias=old_conv1.bias is not None,
+                dilation=old_conv1.dilation, groups=old_conv1.groups
+            )
+            # 复制权重：将 3 通道的权重沿通道维度平均，转换为 1 通道
+            with torch.no_grad():
+                eff.features[0][0].weight.copy_(old_conv1.weight.mean(dim=1, keepdim=True))
+                if old_conv1.bias is not None:
+                    eff.features[0][0].bias.copy_(old_conv1.bias)
             self.backbone = eff.features
             self._backbone_raw = eff
             out_channels_backbone = 1280
@@ -203,7 +229,20 @@ class RoRD(nn.Module):
             # relu2_2 索引 8，relu3_3 索引 15，relu4_3 索引 22
             self.features = vgg16_features
             # 共享骨干（向后兼容单尺度路径，使用到 relu4_3）
-            self.backbone = nn.Sequential(*list(vgg16_features.children())[:23])
+            backbone_layers = list(vgg16_features.children())[:23]
+            # 修改第一层卷积以支持 1 通道灰度输入
+            old_conv1 = backbone_layers[0]
+            backbone_layers[0] = nn.Conv2d(
+                1, 64, kernel_size=old_conv1.kernel_size,
+                stride=old_conv1.stride, padding=old_conv1.padding,
+                bias=old_conv1.bias is not None
+            )
+            # 复制权重：将 3 通道的权重沿通道维度平均，转换为 1 通道
+            with torch.no_grad():
+                backbone_layers[0].weight.copy_(old_conv1.weight.mean(dim=1, keepdim=True))
+                if old_conv1.bias is not None:
+                    backbone_layers[0].bias.copy_(old_conv1.bias)
+            self.backbone = nn.Sequential(*backbone_layers)
             out_channels_backbone = 512
             c2_ch, c3_ch, c4_ch = 128, 256, 512
 
@@ -329,7 +368,8 @@ class RoRD(nn.Module):
         """提取中间层特征 C2/C3/C4，适配不同骨干。"""
         if self.backbone_name == "vgg16":
             c2 = c3 = c4 = None
-            for i, layer in enumerate(self.features):
+            # 使用 self.backbone（已修改为 1 通道）而不是 self.features
+            for i, layer in enumerate(self.backbone):
                 x = layer(x)
                 if i == 8:   # relu2_2
                     c2 = x

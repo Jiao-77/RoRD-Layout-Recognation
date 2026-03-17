@@ -124,7 +124,7 @@ class TestRoRDModel:
     @pytest.fixture
     def sample_input(self):
         """创建测试输入（3通道，匹配 VGG16 输入）。"""
-        return torch.randn(2, 3, 256, 256)
+        return torch.randn(2, 1, 256, 256)
 
     def test_model_creation_default(self):
         """测试默认模型创建。"""
@@ -272,7 +272,7 @@ class TestModelDeviceCompatibility:
         model = RoRD().to(device)
         model.eval()
         
-        x = torch.randn(1, 3, 128, 128, device=device)
+        x = torch.randn(1, 1, 128, 128, device=device)
         
         with torch.no_grad():
             det_map, descriptors = model(x)
@@ -288,7 +288,7 @@ class TestModelDeviceCompatibility:
             model = RoRD().to(device)
             model.eval()
             
-            x = torch.randn(1, 3, 128, 128, device=device)
+            x = torch.randn(1, 1, 128, 128, device=device)
             
             with torch.no_grad():
                 det_map, descriptors = model(x)
@@ -306,7 +306,7 @@ class TestModelDeviceCompatibility:
         model = RoRD()
         
         # 在 CPU 上创建输入
-        x_cpu = torch.randn(1, 3, 128, 128)
+        x_cpu = torch.randn(1, 1, 128, 128)
         
         # 转移到 CUDA
         try:
@@ -382,7 +382,7 @@ class TestModelMemory:
         
         # 多次推理
         for _ in range(5):
-            x = torch.randn(1, 3, 128, 128)
+            x = torch.randn(1, 1, 128, 128)
             with torch.no_grad():
                 det_map, descriptors = model(x)
             

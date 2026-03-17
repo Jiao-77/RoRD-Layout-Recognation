@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.12"
 resolution-markers = [
     "sys_platform == 'darwin'",
@@ -913,6 +913,7 @@ dependencies = [
     { name = "opencv-python" },
     { name = "pillow" },
     { name = "psutil" },
+    { name = "pytest" },
     { name = "scipy" },
     { name = "tensorboard" },
     { name = "tensorboardx" },
@@ -938,6 +939,7 @@ requires-dist = [
     { name = "opencv-python", specifier = ">=4.11.0.86" },
     { name = "pillow", specifier = ">=11.2.1" },
     { name = "psutil", specifier = ">=7.1.1" },
+    { name = "pytest", specifier = ">=9.0.2" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
     { name = "scipy", specifier = ">=1.11.0" },
