@@ -13,6 +13,15 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 from omegaconf import DictConfig
+
+# KD-Tree 用于 NMS 优化
+try:
+    from scipy.spatial import KDTree
+    HAS_SCIPY = True
+except ImportError:
+    HAS_SCIPY = False
+    KDTree = None  # type: ignore
+
 try:
     from torch.utils.tensorboard import SummaryWriter
 except ImportError:  # pragma: no cover - fallback for environments without torch tensorboard
@@ -219,9 +228,56 @@ def extract_keypoints_and_descriptors(
 
 
 # --- (新增) 简单半径 NMS 去重 ---
-def radius_nms(kps: torch.Tensor, scores: torch.Tensor, radius: float) -> torch.Tensor:
+def radius_nms(
+    kps: torch.Tensor,
+    scores: torch.Tensor,
+    radius: float,
+    use_kdtree: bool = True,
+    kdtree_threshold: int = 500,
+) -> torch.Tensor:
     """
     半径非极大值抑制 (NMS) 去重。
+
+    使用 KD-Tree 优化大规模关键点的 NMS 性能。
+    对于 N < kdtree_threshold 的情况，使用向量化实现。
+
+    Args:
+        kps: 关键点坐标张量，形状为 (N, 2)
+        scores: 关键点得分张量，形状为 (N,)
+        radius: 抑制半径
+        use_kdtree: 是否使用 KD-Tree 优化（需要 scipy）
+        kdtree_threshold: 使用 KD-Tree 的关键点数量阈值
+
+    Returns:
+        保留的关键点索引张量
+    """
+    # 检查空张量情况
+    if kps.numel() == 0 or scores.numel() == 0:
+        return torch.empty((0,), dtype=torch.long, device=kps.device)
+
+    n_kps = kps.shape[0]
+
+    # 检查长度一致性
+    if n_kps != scores.shape[0]:
+        raise ValueError(f"关键点和得分数量不匹配: kps={n_kps}, scores={scores.shape[0]}")
+
+    # 根据关键点数量选择算法
+    if use_kdtree and HAS_SCIPY and n_kps >= kdtree_threshold:
+        return _radius_nms_kdtree(kps, scores, radius)
+    else:
+        return _radius_nms_vectorized(kps, scores, radius)
+
+
+def _radius_nms_vectorized(
+    kps: torch.Tensor,
+    scores: torch.Tensor,
+    radius: float,
+) -> torch.Tensor:
+    """
+    向量化半径 NMS 实现。
+
+    复杂度: O(N²)，但常数因子较小。
+    适合小规模关键点（N < 500）。
 
     Args:
         kps: 关键点坐标张量，形状为 (N, 2)
@@ -231,17 +287,11 @@ def radius_nms(kps: torch.Tensor, scores: torch.Tensor, radius: float) -> torch.
     Returns:
         保留的关键点索引张量
     """
-    # 检查空张量情况
-    if kps.numel() == 0 or scores.numel() == 0:
-        return torch.empty((0,), dtype=torch.long, device=kps.device)
-
-    # 检查长度一致性
-    if kps.shape[0] != scores.shape[0]:
-        raise ValueError(f"关键点和得分数量不匹配: kps={kps.shape[0]}, scores={scores.shape[0]}")
-
+    device = kps.device
     idx = torch.argsort(scores, descending=True)
     keep = []
-    taken = torch.zeros(len(kps), dtype=torch.bool, device=kps.device)
+    taken = torch.zeros(len(kps), dtype=torch.bool, device=device)
+
     for i in idx:
         if taken[i]:
             continue
@@ -250,7 +300,54 @@ def radius_nms(kps: torch.Tensor, scores: torch.Tensor, radius: float) -> torch.
         dist2 = (di[:, 0]**2 + di[:, 1]**2)
         taken |= dist2 <= (radius * radius)
         taken[i] = True
-    return torch.tensor(keep, dtype=torch.long, device=kps.device)
+
+    return torch.tensor(keep, dtype=torch.long, device=device)
+
+
+def _radius_nms_kdtree(
+    kps: torch.Tensor,
+    scores: torch.Tensor,
+    radius: float,
+) -> torch.Tensor:
+    """
+    使用 KD-Tree 的半径 NMS 实现。
+
+    复杂度: O(N log N)，适合大规模关键点。
+
+    Args:
+        kps: 关键点坐标张量，形状为 (N, 2)
+        scores: 关键点得分张量，形状为 (N,)
+        radius: 抑制半径
+
+    Returns:
+        保留的关键点索引张量
+    """
+    device = kps.device
+
+    # 转换为 numpy 数组用于 KD-Tree
+    kps_np = kps.detach().cpu().numpy()
+    scores_np = scores.detach().cpu().numpy()
+
+    # 按得分降序排序
+    sorted_indices = np.argsort(scores_np)[::-1]
+
+    # 构建 KD-Tree
+    tree = KDTree(kps_np)
+
+    keep = []
+    suppressed = np.zeros(len(kps_np), dtype=bool)
+
+    for i in sorted_indices:
+        if suppressed[i]:
+            continue
+
+        keep.append(i)
+
+        # 查询半径内的所有点
+        neighbors = tree.query_ball_point(kps_np[i], radius)
+        suppressed[neighbors] = True
+
+    return torch.tensor(keep, dtype=torch.long, device=device)
 
 # --- (新增) 滑动窗口特征提取函数 ---
 def extract_features_sliding_window(

@@ -317,6 +317,54 @@ class TestRadiusNMS:
         assert len(keep_small) >= len(keep_large)
 
 
+    def test_kdtree_optimization(self):
+        """测试 KD-Tree 优化自动选择。"""
+        # 小规模：使用向量化
+        small_kps = torch.rand(100, 2) * 256
+        small_scores = torch.rand(100)
+
+        # 大规模：使用 KD-Tree
+        large_kps = torch.rand(2000, 2) * 256
+        large_scores = torch.rand(2000)
+
+        # 两者都应该正常工作
+        keep_small = radius_nms(small_kps, small_scores, radius=10.0)
+        keep_large = radius_nms(large_kps, large_scores, radius=10.0)
+
+        assert len(keep_small) > 0
+        assert len(keep_large) > 0
+
+    def test_kdtree_correctness(self):
+        """测试 KD-Tree 实现的正确性。"""
+        from match import _radius_nms_vectorized, _radius_nms_kdtree
+
+        torch.manual_seed(42)
+        kps = torch.rand(200, 2) * 256
+        scores = torch.rand(200)
+
+        result_vec = _radius_nms_vectorized(kps, scores, radius=10.0)
+        result_kdtree = _radius_nms_kdtree(kps, scores, radius=10.0)
+
+        # 两种实现应该产生相同数量的关键点
+        assert len(result_vec) == len(result_kdtree)
+
+    def test_performance_large_scale(self):
+        """测试大规模关键点的性能。"""
+        import time
+
+        torch.manual_seed(42)
+        kps = torch.rand(5000, 2) * 256
+        scores = torch.rand(5000)
+
+        start = time.time()
+        keep = radius_nms(kps, scores, radius=10.0)
+        elapsed = time.time() - start
+
+        # 应该在合理时间内完成（< 1 秒）
+        assert elapsed < 1.0, f"NMS 耗时 {elapsed:.2f}s，超过 1 秒"
+        assert len(keep) > 0
+
+
 class TestMutualNearestNeighbor:
     """测试互近邻匹配函数。"""
 
