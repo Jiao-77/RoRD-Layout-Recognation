@@ -83,11 +83,15 @@ cv.max_hier_levels = 20
 cv.zoom_fit()
 cv.save_image(r"{png_path_str}", {dpi}, 0)
 """
+    
+    macro_path = None
     try:
+        # 创建临时宏文件
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as tf:
             tf.write(script)
             tf.flush()
             macro_path = Path(tf.name)
+        
         # Run klayout in batch mode
         res = subprocess.run(["klayout", "-zz", "-b", "-r", str(macro_path)], check=False, capture_output=True, text=True)
         ok = res.returncode == 0 and png_path.exists()
@@ -95,16 +99,19 @@ cv.save_image(r"{png_path_str}", {dpi}, 0)
             # Print stderr for visibility when running manually
             if res.stderr:
                 sys.stderr.write(res.stderr)
-        try:
-            macro_path.unlink(missing_ok=True)  # type: ignore[arg-type]
-        except Exception:
-            pass
         return ok
     except FileNotFoundError:
         # klayout command not found
         return False
     except Exception:
         return False
+    finally:
+        # 确保临时文件被清理，即使程序崩溃
+        if macro_path is not None:
+            try:
+                macro_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 def gdstk_fallback(gds_path: Path, png_path: Path, dpi: int) -> bool:
