@@ -115,7 +115,10 @@ class ICLayoutTrainingDataset(Dataset):
 
         # 随机尺度抖动
         scale = float(np.random.uniform(self.scale_range[0], self.scale_range[1]))
-        crop_size = int(self.patch_size / max(scale, 1e-6))
+        # 确保 scale 有下界，避免除零和过小的 crop_size
+        scale = max(scale, 0.1)  # 最小 scale 为 0.1
+        crop_size = int(self.patch_size / scale)
+        crop_size = max(crop_size, 1)  # 确保 crop_size 至少为 1
         crop_size = min(crop_size, width, height)
 
         if crop_size <= 0:
@@ -132,21 +135,28 @@ class ICLayoutTrainingDataset(Dataset):
             patch_np_uint8 = self.albu(image=patch_np_uint8)["image"]
             patch = Image.fromarray(patch_np_uint8)
         else:
-            # 原有轻量光度增强
+            # 优化：合并光度增强为单次 numpy 操作，避免多次 point() 遍历
+            patch_np = patch_np_uint8.astype(np.float32)
+            
+            # 亮度调整
             if np.random.random() < 0.5:
                 brightness_factor = np.random.uniform(0.8, 1.2)
-                patch = patch.point(lambda px: int(np.clip(px * brightness_factor, 0, 255)))
-
+                patch_np = patch_np * brightness_factor
+            
+            # 对比度调整
             if np.random.random() < 0.5:
                 contrast_factor = np.random.uniform(0.8, 1.2)
-                patch = patch.point(lambda px: int(np.clip(((px - 128) * contrast_factor) + 128, 0, 255)))
-
+                patch_np = (patch_np - 128) * contrast_factor + 128
+            
+            # 噪声添加
             if np.random.random() < 0.3:
-                patch_np = np.array(patch, dtype=np.float32)
                 noise = np.random.normal(0, 5, patch_np.shape)
-                patch_np = np.clip(patch_np + noise, 0, 255)
-                patch = Image.fromarray(patch_np.astype(np.uint8))
-            patch_np_uint8 = np.array(patch)
+                patch_np = patch_np + noise
+            
+            # 裁剪并转换回 uint8
+            patch_np = np.clip(patch_np, 0, 255)
+            patch_np_uint8 = patch_np.astype(np.uint8)
+            patch = Image.fromarray(patch_np_uint8)
 
         # 随机旋转与镜像（8个离散变换）
         theta_deg = int(np.random.choice([0, 90, 180, 270]))

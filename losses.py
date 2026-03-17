@@ -7,6 +7,53 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+# ============================================================================
+# 损失函数权重常量
+# ============================================================================
+# 检测损失权重
+DET_SMOOTH_L1_WEIGHT = 0.1  # smooth L1 损失在检测损失中的权重
+
+# 描述子损失权重
+DESC_GEOMETRIC_WEIGHT = 1.0    # 几何 triplet 损失权重
+DESC_MANHATTAN_WEIGHT = 0.1    # 曼哈顿损失权重
+DESC_SPARSITY_WEIGHT = 0.01    # 稀疏性损失权重
+DESC_BINARY_WEIGHT = 0.05      # 二值化损失权重
+
+# ============================================================================
+# 预计算的旋转矩阵
+# ============================================================================
+# 用于描述子损失中的负样本生成
+# 避免在循环中重复创建张量
+import math
+import torch
+
+# 预计算 90°、180°、270° 的旋转矩阵
+# 旋转矩阵: [[cos(θ), -sin(θ)], [sin(θ), cos(θ)]]
+_PRECOMPUTED_ROTATIONS_2D = {
+    90: torch.tensor([[0.0, -1.0], [1.0, 0.0]], dtype=torch.float32),
+    180: torch.tensor([[-1.0, 0.0], [0.0, -1.0]], dtype=torch.float32),
+    270: torch.tensor([[0.0, 1.0], [-1.0, 0.0]], dtype=torch.float32),
+}
+
+
+def _get_rotation_matrix(angle: int, device: torch.device) -> torch.Tensor:
+    """
+    获取预计算的旋转矩阵。
+
+    Args:
+        angle: 旋转角度（90, 180, 270）
+        device: 目标设备
+
+    Returns:
+        2x2 旋转矩阵
+    """
+    if angle not in _PRECOMPUTED_ROTATIONS_2D:
+        raise ValueError(f"不支持的角度: {angle}，支持的角度: 90, 180, 270")
+    
+    rot = _PRECOMPUTED_ROTATIONS_2D[angle]
+    return rot.to(device)
+
+
 def _augment_homography_matrix(h_2x3: torch.Tensor) -> torch.Tensor:
     """Append the third row [0, 0, 1] to build a full 3x3 homography."""
     if h_2x3.dim() != 3 or h_2x3.size(1) != 2 or h_2x3.size(2) != 3:
@@ -32,15 +79,33 @@ def compute_detection_loss(
     det_original: torch.Tensor,
     det_rotated: torch.Tensor,
     h: torch.Tensor,
+    smooth_l1_weight: float = DET_SMOOTH_L1_WEIGHT,
 ) -> torch.Tensor:
-    """Binary cross-entropy + smooth L1 detection loss."""
+    """
+    二元交叉熵 + smooth L1 检测损失。
+
+    Args:
+        det_original: 原始图像检测图，形状为 (B, 1, H, W)
+        det_rotated: 变换后图像检测图，形状为 (B, 1, H, W)
+        h: 单应性矩阵，形状为 (B, 2, 3)
+        smooth_l1_weight: smooth L1 损失权重，默认使用 DET_SMOOTH_L1_WEIGHT
+
+    Returns:
+        检测损失张量
+    """
     h_full = _augment_homography_matrix(h)
-    h_inv = torch.inverse(h_full)[:, :2, :]
+    # 使用 torch.linalg.inv 替代 torch.inverse，更稳定
+    # 添加数值稳定性保护
+    try:
+        h_inv = torch.linalg.inv(h_full)[:, :2, :]
+    except RuntimeError:
+        # 如果矩阵奇异，使用伪逆作为回退
+        h_inv = torch.linalg.pinv(h_full)[:, :2, :]
     warped_det = warp_feature_map(det_rotated, h_inv)
 
     bce_loss = F.binary_cross_entropy(det_original, warped_det)
     smooth_l1_loss = F.smooth_l1_loss(det_original, warped_det)
-    return bce_loss + 0.1 * smooth_l1_loss
+    return bce_loss + smooth_l1_weight * smooth_l1_loss
 
 
 def compute_description_loss(
@@ -48,10 +113,30 @@ def compute_description_loss(
     desc_rotated: torch.Tensor,
     h: torch.Tensor,
     margin: float = 1.0,
+    num_samples: int = 200,
+    geometric_weight: float = DESC_GEOMETRIC_WEIGHT,
+    manhattan_weight: float = DESC_MANHATTAN_WEIGHT,
+    sparsity_weight: float = DESC_SPARSITY_WEIGHT,
+    binary_weight: float = DESC_BINARY_WEIGHT,
 ) -> torch.Tensor:
-    """Triplet-style descriptor loss with Manhattan-aware sampling."""
+    """
+    Triplet-style descriptor loss with Manhattan-aware sampling.
+
+    Args:
+        desc_original: 原始图像描述子，形状为 (B, C, H, W)
+        desc_rotated: 变换后图像描述子，形状为 (B, C, H, W)
+        h: 单应性矩阵，形状为 (B, 2, 3)
+        margin: triplet loss 的边界值
+        num_samples: 曼哈顿采样点数量，默认 200。对于大特征图可适当增加
+        geometric_weight: 几何 triplet 损失权重
+        manhattan_weight: 曼哈顿损失权重
+        sparsity_weight: 稀疏性损失权重
+        binary_weight: 二值化损失权重
+
+    Returns:
+        描述子损失张量
+    """
     batch_size, channels, height, width = desc_original.size()
-    num_samples = 200
 
     grid_side = int(math.sqrt(num_samples))
     h_coords = torch.linspace(-1, 1, grid_side, device=desc_original.device)
@@ -74,7 +159,12 @@ def compute_description_loss(
     )
 
     h_full = _augment_homography_matrix(h)
-    h_inv = torch.inverse(h_full)
+    # 使用 torch.linalg.inv 替代 torch.inverse，更稳定
+    try:
+        h_inv = torch.linalg.inv(h_full)
+    except RuntimeError:
+        # 如果矩阵奇异，使用伪逆作为回退
+        h_inv = torch.linalg.pinv(h_full)
     coords_transformed = (coords_hom @ h_inv.transpose(1, 2))[:, :, :2]
 
     positive = F.grid_sample(
@@ -85,19 +175,9 @@ def compute_description_loss(
 
     negative_list = []
     if manhattan_coords.size(1) > 0:
-        angles = [0, 90, 180, 270]
-        for angle in angles:
-            if angle == 0:
-                continue
-            theta = torch.tensor(angle * math.pi / 180.0, device=desc_original.device)
-            cos_t = torch.cos(theta)
-            sin_t = torch.sin(theta)
-            rot = torch.stack(
-                [
-                    torch.stack([cos_t, -sin_t]),
-                    torch.stack([sin_t, cos_t]),
-                ]
-            )
+        # 使用预计算的旋转矩阵，避免重复创建张量
+        for angle in [90, 180, 270]:
+            rot = _get_rotation_matrix(angle, desc_original.device)
             rotated_coords = manhattan_coords @ rot.T
             negative_list.append(rotated_coords)
 
@@ -135,4 +215,9 @@ def compute_description_loss(
     sparsity_loss = torch.mean(torch.abs(anchor)) + torch.mean(torch.abs(positive))
     binary_loss = torch.mean(torch.abs(torch.sign(anchor) - torch.sign(positive)))
 
-    return geometric_triplet + 0.1 * manhattan_loss + 0.01 * sparsity_loss + 0.05 * binary_loss
+    return (
+        geometric_weight * geometric_triplet
+        + manhattan_weight * manhattan_loss
+        + sparsity_weight * sparsity_loss
+        + binary_weight * binary_loss
+    )

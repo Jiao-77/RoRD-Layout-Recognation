@@ -1,9 +1,33 @@
-"""Legacy config shim loading values from YAML."""
+"""
+Legacy config shim loading values from YAML.
+
+.. deprecated::
+    此模块已废弃，请使用 `utils.config` 模块代替。
+    
+    迁移示例:
+        # 旧方式（已废弃）
+        from config import LEARNING_RATE, BATCH_SIZE
+        
+        # 新方式（推荐）
+        from utils.config import load_config
+        cfg = load_config("configs/base_config.yaml")
+        print(cfg.training.learning_rate)
+        print(cfg.training.batch_size)
+"""
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 from omegaconf import OmegaConf
+
+# 发出废弃警告
+warnings.warn(
+    "config.py 模块已废弃，请使用 utils.config 模块代替。"
+    "参见 utils/config.py 获取迁移指南。",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 
 _BASE_CONFIG_PATH = Path(__file__).resolve().parent / "configs" / "base_config.yaml"

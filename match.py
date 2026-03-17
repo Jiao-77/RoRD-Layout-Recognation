@@ -2,14 +2,17 @@
 
 import argparse
 import json
+import logging
 import os
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
+from omegaconf import DictConfig
 try:
     from torch.utils.tensorboard import SummaryWriter
 except ImportError:  # pragma: no cover - fallback for environments without torch tensorboard
@@ -19,11 +22,19 @@ from models.rord import RoRD
 from utils.config_loader import load_config, to_absolute_path
 from utils.data_utils import get_transform
 
+# 配置日志
+logger = logging.getLogger(__name__)
+
 # --- 新增：功能增强函数 ---
-def extract_rotation_angle(H):
+def extract_rotation_angle(H: Optional[np.ndarray]) -> int:
     """
-    从单应性矩阵中提取旋转角度
-    返回0°, 90°, 180°, 270°之一
+    从单应性矩阵中提取旋转角度。
+
+    Args:
+        H: 3x3 单应性矩阵，如果为 None 则返回 0
+
+    Returns:
+        旋转角度：0°, 90°, 180°, 270° 之一
     """
     if H is None:
         return 0
@@ -42,15 +53,23 @@ def extract_rotation_angle(H):
     return nearest_angle
 
 
-def calculate_match_score(inlier_count, total_keypoints, H, inlier_ratio=None):
+def calculate_match_score(
+    inlier_count: int,
+    total_keypoints: int,
+    H: Optional[np.ndarray],
+    inlier_ratio: Optional[float] = None
+) -> float:
     """
-    计算匹配质量评分 (0-1)
+    计算匹配质量评分 (0-1)。
 
     Args:
         inlier_count: 内点数量
         total_keypoints: 总关键点数量
         H: 单应性矩阵
         inlier_ratio: 内点比例（可选）
+
+    Returns:
+        匹配质量评分，范围 [0, 1]
     """
     if inlier_ratio is None:
         inlier_ratio = inlier_count / max(total_keypoints, 1)
@@ -73,14 +92,21 @@ def calculate_match_score(inlier_count, total_keypoints, H, inlier_ratio=None):
     return min(max(final_score, 0.0), 1.0)
 
 
-def calculate_similarity(matches_count, template_kps_count, layout_kps_count):
+def calculate_similarity(
+    matches_count: int,
+    template_kps_count: int,
+    layout_kps_count: int
+) -> float:
     """
-    计算模板和版图之间的相似度
+    计算模板和版图之间的相似度。
 
     Args:
         matches_count: 匹配对数量
         template_kps_count: 模板关键点数量
         layout_kps_count: 版图关键点数量
+
+    Returns:
+        相似度评分，范围 [0, 1]
     """
     # 匹配率
     template_match_rate = matches_count / max(template_kps_count, 1)
@@ -94,15 +120,23 @@ def calculate_similarity(matches_count, template_kps_count, layout_kps_count):
     return min(max(similarity, 0.0), 1.0)
 
 
-def generate_difference_description(H, inlier_count, total_matches, angle_diff=0):
+def generate_difference_description(
+    H: Optional[np.ndarray],
+    inlier_count: int,
+    total_matches: int,
+    angle_diff: int = 0
+) -> str:
     """
-    生成差异描述
+    生成差异描述。
 
     Args:
         H: 单应性矩阵
         inlier_count: 内点数量
         total_matches: 总匹配数
         angle_diff: 角度差异
+
+    Returns:
+        差异描述字符串
     """
     descriptions = []
 
@@ -141,7 +175,24 @@ def generate_difference_description(H, inlier_count, total_matches, angle_diff=0
 
 
 # --- 特征提取函数 (基本无变动) ---
-def extract_keypoints_and_descriptors(model, image_tensor, kp_thresh):
+def extract_keypoints_and_descriptors(
+    model: torch.nn.Module,
+    image_tensor: torch.Tensor,
+    kp_thresh: float
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    从图像张量中提取关键点和描述子。
+
+    Args:
+        model: RoRD 模型
+        image_tensor: 输入图像张量，形状为 (B, C, H, W)
+        kp_thresh: 关键点检测阈值
+
+    Returns:
+        元组 (keypoints, descriptors):
+            - keypoints: 关键点坐标，形状为 (N, 2)
+            - descriptors: 描述子，形状为 (N, D)
+    """
     with torch.no_grad():
         detection_map, desc = model(image_tensor)
     
@@ -169,8 +220,25 @@ def extract_keypoints_and_descriptors(model, image_tensor, kp_thresh):
 
 # --- (新增) 简单半径 NMS 去重 ---
 def radius_nms(kps: torch.Tensor, scores: torch.Tensor, radius: float) -> torch.Tensor:
-    if kps.numel() == 0:
+    """
+    半径非极大值抑制 (NMS) 去重。
+
+    Args:
+        kps: 关键点坐标张量，形状为 (N, 2)
+        scores: 关键点得分张量，形状为 (N,)
+        radius: 抑制半径
+
+    Returns:
+        保留的关键点索引张量
+    """
+    # 检查空张量情况
+    if kps.numel() == 0 or scores.numel() == 0:
         return torch.empty((0,), dtype=torch.long, device=kps.device)
+
+    # 检查长度一致性
+    if kps.shape[0] != scores.shape[0]:
+        raise ValueError(f"关键点和得分数量不匹配: kps={kps.shape[0]}, scores={scores.shape[0]}")
+
     idx = torch.argsort(scores, descending=True)
     keep = []
     taken = torch.zeros(len(kps), dtype=torch.bool, device=kps.device)
@@ -185,11 +253,27 @@ def radius_nms(kps: torch.Tensor, scores: torch.Tensor, radius: float) -> torch.
     return torch.tensor(keep, dtype=torch.long, device=kps.device)
 
 # --- (新增) 滑动窗口特征提取函数 ---
-def extract_features_sliding_window(model, large_image, transform, matching_cfg):
+def extract_features_sliding_window(
+    model: torch.nn.Module,
+    large_image: Image.Image,
+    transform: Any,
+    matching_cfg: DictConfig
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    使用滑动窗口从大图上提取所有关键点和描述子
+    使用滑动窗口从大图上提取所有关键点和描述子。
+
+    Args:
+        model: RoRD 模型
+        large_image: 大版图 PIL 图像
+        transform: 图像预处理变换
+        matching_cfg: 匹配配置
+
+    Returns:
+        元组 (keypoints, descriptors):
+            - keypoints: 所有关键点坐标，形状为 (N, 2)
+            - descriptors: 所有描述子，形状为 (N, D)
     """
-    print("使用滑动窗口提取大版图特征...")
+    logger.info("使用滑动窗口提取大版图特征...")
     device = next(model.parameters()).device
     W, H = large_image.size
     window_size = int(matching_cfg.inference_window_size)
@@ -224,12 +308,30 @@ def extract_features_sliding_window(model, large_image, transform, matching_cfg)
     if not all_kps:
         return torch.tensor([], device=device), torch.tensor([], device=device)
 
-    print(f"大版图特征提取完毕，共找到 {sum(len(k) for k in all_kps)} 个关键点。")
+    total_kps = sum(len(k) for k in all_kps)
+    logger.info(f"大版图特征提取完毕，共找到 {total_kps} 个关键点。")
     return torch.cat(all_kps, dim=0), torch.cat(all_descs, dim=0)
 
 
 # --- (新增) FPN 路径的关键点与描述子抽取 ---
-def extract_from_pyramid(model, image_tensor, kp_thresh, nms_cfg):
+def extract_from_pyramid(
+    model: torch.nn.Module,
+    image_tensor: torch.Tensor,
+    kp_thresh: float,
+    nms_cfg: Optional[DictConfig]
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    使用 FPN 从图像中提取多尺度关键点和描述子。
+
+    Args:
+        model: RoRD 模型
+        image_tensor: 输入图像张量
+        kp_thresh: 关键点检测阈值
+        nms_cfg: NMS 配置（可选）
+
+    Returns:
+        元组 (keypoints, descriptors)
+    """
     with torch.no_grad():
         pyramid = model(image_tensor, return_pyramid=True)
     all_kps = []
@@ -263,7 +365,20 @@ def extract_from_pyramid(model, image_tensor, kp_thresh, nms_cfg):
 
 
 # --- 互近邻匹配 (无变动) ---
-def mutual_nearest_neighbor(descs1, descs2):
+def mutual_nearest_neighbor(
+    descs1: torch.Tensor,
+    descs2: torch.Tensor
+) -> torch.Tensor:
+    """
+    执行互近邻匹配。
+
+    Args:
+        descs1: 第一组描述子，形状为 (N, D)
+        descs2: 第二组描述子，形状为 (M, D)
+
+    Returns:
+        匹配对索引，形状为 (K, 2)，每行是 (descs1_index, descs2_index)
+    """
     if len(descs1) == 0 or len(descs2) == 0:
         return torch.empty((0, 2), dtype=torch.int64)
     sim = descs1 @ descs2.T
@@ -276,30 +391,30 @@ def mutual_nearest_neighbor(descs1, descs2):
 
 # --- (已修改) 多尺度、多实例匹配主函数 ---
 def match_template_multiscale(
-    model,
-    layout_image,
-    template_image,
-    transform,
-    matching_cfg,
-    log_writer: SummaryWriter | None = None,
+    model: torch.nn.Module,
+    layout_image: Image.Image,
+    template_image: Image.Image,
+    transform: Any,
+    matching_cfg: DictConfig,
+    log_writer: Optional[SummaryWriter] = None,
     log_step: int = 0,
     return_detailed_info: bool = True,
-):
+) -> List[Dict[str, Any]]:
     """
-    在不同尺度下搜索模板，并检测多个实例
+    在不同尺度下搜索模板，并检测多个实例。
 
     Args:
-        model: RoRD模型
-        layout_image: 大版图图像
-        template_image: 小版图图像
+        model: RoRD 模型
+        layout_image: 大版图 PIL 图像
+        template_image: 小版图（模板）PIL 图像
         transform: 图像预处理变换
         matching_cfg: 匹配配置
-        log_writer: TensorBoard日志记录器
+        log_writer: TensorBoard 日志记录器
         log_step: 日志步数
         return_detailed_info: 是否返回详细信息
 
     Returns:
-        匹配结果列表，包含坐标、旋转角度、置信度等信息
+        匹配结果列表，每个元素包含坐标、旋转角度、置信度等信息
     """
     # 1. 版图特征提取：根据配置选择 FPN 或滑窗
     device = next(model.parameters()).device
@@ -313,7 +428,7 @@ def match_template_multiscale(
     
     min_inliers = int(matching_cfg.min_inliers)
     if len(layout_kps) < min_inliers:
-        print("从大版图中提取的关键点过少，无法进行匹配。")
+        logger.warning("从大版图中提取的关键点过少，无法进行匹配。")
         if log_writer:
             log_writer.add_scalar("match/instances_found", 0, log_step)
         return []
@@ -338,7 +453,7 @@ def match_template_multiscale(
         best_match_info = {'inliers': 0, 'H': None, 'src_pts': None, 'dst_pts': None, 'mask': None}
 
         # 3. 图像金字塔：遍历模板的每个尺度
-        print("在新尺度下搜索模板...")
+        logger.info("在新尺度下搜索模板...")
         for scale in pyramid_scales:
             W, H = template_image.size
             new_W, new_H = int(W * scale), int(H * scale)
@@ -369,11 +484,18 @@ def match_template_multiscale(
             H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, ransac_threshold)
 
             if H is not None and mask.sum() > best_match_info['inliers']:
-                best_match_info = {'inliers': mask.sum(), 'H': H, 'mask': mask, 'scale': scale, 'dst_pts': dst_pts}
+                best_match_info = {
+                    'inliers': mask.sum(),
+                    'H': H,
+                    'src_pts': src_pts,
+                    'dst_pts': dst_pts,
+                    'mask': mask,
+                    'scale': scale
+                }
 
         # 4. 如果在所有尺度中找到了最佳匹配，则记录并屏蔽
         if best_match_info['inliers'] > min_inliers:
-            print(f"找到一个匹配实例！内点数: {best_match_info['inliers']}, 使用的模板尺度: {best_match_info['scale']:.2f}x")
+            logger.info(f"找到一个匹配实例！内点数: {best_match_info['inliers']}, 使用的模板尺度: {best_match_info['scale']:.2f}x")
             if log_writer:
                 instance_index = len(found_instances)
                 log_writer.add_scalar("match/instance_inliers", int(best_match_info['inliers']), log_step + instance_index)
@@ -444,10 +566,10 @@ def match_template_multiscale(
             region_mask = (kp_x >= x_min) & (kp_x <= x_max) & (kp_y >= y_min) & (kp_y <= y_max)
             active_layout_mask[region_mask] = False
             
-            print(f"剩余活动关键点: {active_layout_mask.sum()}")
+            logger.info(f"剩余活动关键点: {active_layout_mask.sum()}")
         else:
             # 如果在所有尺度下都找不到好的匹配，则结束搜索
-            print("在所有尺度下均未找到新的匹配实例，搜索结束。")
+            logger.info("在所有尺度下均未找到新的匹配实例，搜索结束。")
             break
             
     if log_writer:
@@ -456,18 +578,22 @@ def match_template_multiscale(
     return found_instances
 
 
-def visualize_matches(layout_path, matches, output_path):
+def visualize_matches(
+    layout_path: Union[str, Path],
+    matches: List[Dict[str, Any]],
+    output_path: Union[str, Path]
+) -> None:
     """
-    可视化匹配结果，支持新的详细格式
+    可视化匹配结果，支持新的详细格式。
 
     Args:
         layout_path: 大版图路径
         matches: 匹配结果列表
         output_path: 输出图像路径
     """
-    layout_img = cv2.imread(layout_path)
+    layout_img = cv2.imread(str(layout_path))
     if layout_img is None:
-        print(f"错误：无法读取图像 {layout_path}")
+        logger.error(f"无法读取图像 {layout_path}")
         return
 
     for i, match in enumerate(matches):
@@ -503,17 +629,20 @@ def visualize_matches(layout_path, matches, output_path):
         cv2.rectangle(layout_img, (x, y - label_height - 10), (x + label_width, y), (0, 255, 0), -1)
         cv2.putText(layout_img, label, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
 
-    cv2.imwrite(output_path, layout_img)
-    print(f"可视化结果已保存至: {output_path}")
+    cv2.imwrite(str(output_path), layout_img)
+    logger.info(f"可视化结果已保存至: {output_path}")
 
 
-def save_matches_json(matches, output_path):
+def save_matches_json(
+    matches: List[Dict[str, Any]],
+    output_path: Union[str, Path]
+) -> None:
     """
-    保存匹配结果到JSON文件
+    将匹配结果保存为 JSON 文件。
 
     Args:
         matches: 匹配结果列表
-        output_path: 输出JSON文件路径
+        output_path: 输出 JSON 文件路径
     """
     result = {
         'found_matches': len(matches) > 0,
@@ -524,12 +653,12 @@ def save_matches_json(matches, output_path):
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(result, f, indent=2, ensure_ascii=False)
 
-    print(f"匹配结果已保存至: {output_path}")
+    logger.info(f"匹配结果已保存至: {output_path}")
 
 
-def print_detailed_results(matches):
+def print_detailed_results(matches: List[Dict[str, Any]]) -> None:
     """
-    打印详细的匹配结果
+    打印详细的匹配结果。
 
     Args:
         matches: 匹配结果列表
@@ -631,9 +760,15 @@ if __name__ == "__main__":
         # 若 OmegaConf 结构不可写，忽略并在后续逻辑中以 getattr 的方式读取
         pass
 
+    # 设备选择：支持 CUDA / CPU，优先使用 GPU
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info(f"使用设备: {device}")
+    if device.type == "cuda":
+        logger.info(f"GPU 型号: {torch.cuda.get_device_name(0)}")
+
     transform = get_transform()
-    model = RoRD().cuda()
-    model.load_state_dict(torch.load(model_path))
+    model = RoRD().to(device)
+    model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
 
     layout_image = Image.open(args.layout).convert('L')

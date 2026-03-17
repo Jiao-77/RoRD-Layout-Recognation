@@ -168,8 +168,14 @@ if __name__ == "__main__":
         tb_path.parent.mkdir(parents=True, exist_ok=True)
         writer = SummaryWriter(tb_path.as_posix())
 
-    model = RoRD().cuda()
-    model.load_state_dict(torch.load(model_path))
+    # 设备选择：支持 CUDA / CPU，优先使用 GPU
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"使用设备: {device}")
+    if device.type == "cuda":
+        print(f"GPU 型号: {torch.cuda.get_device_name(0)}")
+
+    model = RoRD().to(device)
+    model.load_state_dict(torch.load(model_path, map_location=device))
     
     results = evaluate(
         model,

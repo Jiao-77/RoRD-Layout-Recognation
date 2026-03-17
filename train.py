@@ -16,6 +16,13 @@ from models.rord import RoRD
 from utils.config_loader import load_config, to_absolute_path
 from utils.data_utils import get_transform
 
+# ============================================================================
+# 训练超参数常量
+# ============================================================================
+DEFAULT_WEIGHT_DECAY = 1e-4  # Adam 优化器默认权重衰减
+DEFAULT_VALIDATION_SPLIT = 0.8  # 训练集占比（剩余为验证集）
+
+
 # 设置日志记录
 def setup_logging(save_dir):
     """设置训练日志记录"""
@@ -212,11 +219,18 @@ def main(args):
         writer.add_text("dataset/info", f"train={len(train_dataloader.dataset)}, val={len(val_dataset)}")
 
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
-    
-    model = RoRD().cuda()
+
+    # 设备选择：支持 CUDA / CPU，优先使用 GPU
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info(f"使用设备: {device}")
+    if device.type == "cuda":
+        logger.info(f"GPU 型号: {torch.cuda.get_device_name(0)}")
+        logger.info(f"GPU 显存: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+
+    model = RoRD().to(device)
     logger.info(f"模型参数数量: {sum(p.numel() for p in model.parameters()):,}")
     
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=DEFAULT_WEIGHT_DECAY)
     
     # 添加学习率调度器
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -236,7 +250,7 @@ def main(args):
         total_desc_loss = 0
         
         for i, (original, rotated, H) in enumerate(train_dataloader):
-            original, rotated, H = original.cuda(), rotated.cuda(), H.cuda()
+            original, rotated, H = original.to(device), rotated.to(device), H.to(device)
             
             det_original, desc_original = model(original)
             det_rotated, desc_rotated = model(rotated)
@@ -284,7 +298,7 @@ def main(args):
         
         with torch.no_grad():
             for original, rotated, H in val_dataloader:
-                original, rotated, H = original.cuda(), rotated.cuda(), H.cuda()
+                original, rotated, H = original.to(device), rotated.to(device), H.to(device)
                 
                 det_original, desc_original = model(original)
                 det_rotated, desc_rotated = model(rotated)

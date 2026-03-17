@@ -1,9 +1,26 @@
 # models/rord.py
 
+import logging
+from typing import Optional, Tuple, Union
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import models
+
+# 配置日志
+logger = logging.getLogger(__name__)
+
+# 尝试导入新配置系统
+try:
+    from utils.config import ModelConfig, BackboneConfig, AttentionConfig, FPNConfig
+    HAS_CONFIG = True
+except ImportError:
+    HAS_CONFIG = False
+    ModelConfig = None
+    BackboneConfig = None
+    AttentionConfig = None
+    FPNConfig = None
 
 # --- Optional Attention Modules (default disabled) ---
 class SEBlock(nn.Module):
@@ -52,38 +69,96 @@ class CBAM(nn.Module):
         return x * attn
 
 class RoRD(nn.Module):
-    def __init__(self, fpn_out_channels: int = 256, fpn_levels=(2, 3, 4), cfg=None):
+    def __init__(
+        self,
+        model_config: Optional["ModelConfig"] = None,
+        # 以下参数保留用于向后兼容，但建议使用 model_config
+        fpn_out_channels: int = 256,
+        fpn_levels: Tuple[int, ...] = (2, 3, 4),
+        cfg=None,  # 废弃：请使用 model_config
+    ):
         """
         修复后的 RoRD 模型。
-        - 实现了共享骨干网络，以提高计算效率和减少内存占用。
-        - 确保检测头和描述子头使用相同尺寸的特征图。
-        - 新增（可选）FPN 推理路径，提供多尺度特征用于高效匹配。
+        
+        支持两种配置方式：
+        1. 推荐方式：使用 ModelConfig 对象
+           ```python
+           from utils.config import ModelConfig, BackboneConfig
+           config = ModelConfig(backbone=BackboneConfig(name="resnet34"))
+           model = RoRD(model_config=config)
+           ```
+        
+        2. 向后兼容方式：使用参数或旧版 cfg 对象
+           ```python
+           model = RoRD(fpn_out_channels=256, fpn_levels=(2, 3, 4))
+           ```
+        
+        Args:
+            model_config: 模型配置对象（推荐）
+            fpn_out_channels: FPN 输出通道数（向后兼容）
+            fpn_levels: FPN 层级（向后兼容）
+            cfg: 旧版配置对象（已废弃）
         """
         super(RoRD, self).__init__()
 
-        # 解析可选配置（保持全部默认关闭）
-        backbone_name = "vgg16"
-        pretrained = False
-        attn_enabled = False
-        attn_type = "none"
-        attn_places = []
-        attn_reduction = 16
-        attn_spatial_kernel = 7
-        try:
-            if cfg is not None and hasattr(cfg, 'model'):
-                m = cfg.model
-                if hasattr(m, 'backbone'):
-                    backbone_name = str(getattr(m.backbone, 'name', backbone_name))
-                    pretrained = bool(getattr(m.backbone, 'pretrained', pretrained))
-                if hasattr(m, 'attention'):
-                    attn_enabled = bool(getattr(m.attention, 'enabled', attn_enabled))
-                    attn_type = str(getattr(m.attention, 'type', attn_type))
-                    attn_places = list(getattr(m.attention, 'places', attn_places))
-                    attn_reduction = int(getattr(m.attention, 'reduction', attn_reduction))
-                    attn_spatial_kernel = int(getattr(m.attention, 'spatial_kernel', attn_spatial_kernel))
-        except Exception:
-            # 配置非标准时，保留默认
-            pass
+        # 解析配置
+        if model_config is not None:
+            # 新配置系统
+            backbone_name = model_config.backbone.name
+            pretrained = model_config.backbone.pretrained
+            attn_enabled = model_config.attention.enabled
+            attn_type = model_config.attention.type
+            attn_places = model_config.attention.places
+            attn_reduction = model_config.attention.reduction
+            attn_spatial_kernel = model_config.attention.spatial_kernel
+            fpn_enabled = model_config.fpn.enabled
+            fpn_out = model_config.fpn.out_channels
+            fpn_lvls = model_config.fpn.levels
+        elif cfg is not None:
+            # 旧配置系统（向后兼容）
+            logger.warning("使用废弃的 cfg 参数，建议迁移到 model_config")
+            backbone_name = "vgg16"
+            pretrained = False
+            attn_enabled = False
+            attn_type = "none"
+            attn_places = []
+            attn_reduction = 16
+            attn_spatial_kernel = 7
+            fpn_enabled = True
+            fpn_out = fpn_out_channels
+            fpn_lvls = fpn_levels
+            
+            try:
+                if hasattr(cfg, 'model'):
+                    m = cfg.model
+                    if hasattr(m, 'backbone'):
+                        backbone_name = str(getattr(m.backbone, 'name', backbone_name))
+                        pretrained = bool(getattr(m.backbone, 'pretrained', pretrained))
+                    if hasattr(m, 'attention'):
+                        attn_enabled = bool(getattr(m.attention, 'enabled', attn_enabled))
+                        attn_type = str(getattr(m.attention, 'type', attn_type))
+                        attn_places = list(getattr(m.attention, 'places', attn_places))
+                        attn_reduction = int(getattr(m.attention, 'reduction', attn_reduction))
+                        attn_spatial_kernel = int(getattr(m.attention, 'spatial_kernel', attn_spatial_kernel))
+                    if hasattr(m, 'fpn'):
+                        fpn_enabled = bool(getattr(m.fpn, 'enabled', fpn_enabled))
+                        fpn_out = int(getattr(m.fpn, 'out_channels', fpn_out))
+                        levels = getattr(m.fpn, 'levels', list(fpn_lvls))
+                        fpn_lvls = tuple(levels) if levels else fpn_lvls
+            except (AttributeError, KeyError, TypeError) as e:
+                logger.debug(f"配置解析使用默认值: {e}")
+        else:
+            # 使用默认值或参数
+            backbone_name = "vgg16"
+            pretrained = False
+            attn_enabled = False
+            attn_type = "none"
+            attn_places = []
+            attn_reduction = 16
+            attn_spatial_kernel = 7
+            fpn_enabled = True
+            fpn_out = fpn_out_channels
+            fpn_lvls = fpn_levels
 
         # 构建骨干
         self.backbone_name = backbone_name
@@ -171,22 +246,36 @@ class RoRD(nn.Module):
             self.descriptor_head = nn.Sequential(make_attn_layer(out_channels_backbone), *list(self.descriptor_head.children()))
 
         # --- FPN 组件（用于可选多尺度推理） ---
-        self.fpn_out_channels = fpn_out_channels
-        self.fpn_levels = tuple(sorted(set(fpn_levels)))  # e.g., (2,3,4)
+        self.fpn_out_channels = fpn_out
+        self.fpn_enabled = fpn_enabled
+
+        # 验证 FPN 层级配置
+        valid_levels = {2, 3, 4}
+        fpn_levels_set = set(fpn_lvls)
+        invalid_levels = fpn_levels_set - valid_levels
+        if invalid_levels:
+            raise ValueError(
+                f"FPN 层级必须是 2, 3, 4 的子集，但收到了无效层级: {invalid_levels}。"
+                f"有效层级说明: P2(高分辨率), P3(中分辨率), P4(低分辨率)"
+            )
+
+        # 排序以确保一致的输出顺序
+        # 注意: FPN 内部构建始终是自顶向下 (P4->P3->P2)，与输入顺序无关
+        self.fpn_levels = tuple(sorted(fpn_levels_set))  # e.g., (2,3,4)
 
         # 横向连接 1x1：根据骨干动态对齐到相同通道数
-        self.lateral_c2 = nn.Conv2d(c2_ch, fpn_out_channels, kernel_size=1)
-        self.lateral_c3 = nn.Conv2d(c3_ch, fpn_out_channels, kernel_size=1)
-        self.lateral_c4 = nn.Conv2d(c4_ch, fpn_out_channels, kernel_size=1)
+        self.lateral_c2 = nn.Conv2d(c2_ch, fpn_out, kernel_size=1)
+        self.lateral_c3 = nn.Conv2d(c3_ch, fpn_out, kernel_size=1)
+        self.lateral_c4 = nn.Conv2d(c4_ch, fpn_out, kernel_size=1)
 
         # 平滑 3x3 conv
-        self.smooth_p2 = nn.Conv2d(fpn_out_channels, fpn_out_channels, kernel_size=3, padding=1)
-        self.smooth_p3 = nn.Conv2d(fpn_out_channels, fpn_out_channels, kernel_size=3, padding=1)
-        self.smooth_p4 = nn.Conv2d(fpn_out_channels, fpn_out_channels, kernel_size=3, padding=1)
+        self.smooth_p2 = nn.Conv2d(fpn_out, fpn_out, kernel_size=3, padding=1)
+        self.smooth_p3 = nn.Conv2d(fpn_out, fpn_out, kernel_size=3, padding=1)
+        self.smooth_p4 = nn.Conv2d(fpn_out, fpn_out, kernel_size=3, padding=1)
 
         # 共享的 FPN 检测/描述子头（输入通道为 fpn_out_channels）
         self.det_head_fpn = nn.Sequential(
-            nn.Conv2d(fpn_out_channels, 128, kernel_size=3, padding=1),
+            nn.Conv2d(fpn_out, 128, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
             nn.Conv2d(128, 1, kernel_size=1),
             nn.Sigmoid(),
@@ -287,9 +376,9 @@ class RoRD(nn.Module):
         """
         try:
             state_dict = weights_enum.get_state_dict(progress=False)
-        except Exception:
+        except (AttributeError, NotImplementedError, RuntimeError) as e:
             # 回退：若权重枚举不支持 get_state_dict，则跳过摘要（通常已在构造器中加载）
-            print(f"[Pretrained] {arch_name}: skip summary (weights enum lacks get_state_dict)")
+            logger.debug(f"[Pretrained] {arch_name}: skip summary - {e}")
             return
         incompatible = torch_model.load_state_dict(state_dict, strict=False)
         total_params = sum(p.numel() for p in torch_model.parameters())
@@ -298,7 +387,7 @@ class RoRD(nn.Module):
         unexpected = list(getattr(incompatible, 'unexpected_keys', []))
         try:
             matched = len(state_dict) - len(unexpected)
-        except Exception:
+        except (TypeError, ValueError):
             matched = 0
         print(f"[Pretrained] {arch_name}: ImageNet weights loaded (strict=False)")
         print(f"  params: total={total_params/1e6:.2f}M, trainable={trainable_params/1e6:.2f}M")

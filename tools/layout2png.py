@@ -19,6 +19,18 @@ import cairosvg
 
 def klayout_convert(gds_path: Path, png_path: Path, dpi: int, layermap: str | None = None, line_width: int | None = None, bgcolor: str | None = None) -> bool:
     """Render using KLayout by invoking a temporary Python macro with paths embedded."""
+    # 路径验证和安全处理
+    gds_path = Path(gds_path).resolve()
+    png_path = Path(png_path).resolve()
+
+    if not gds_path.exists():
+        print(f"[ERROR] GDS file not found: {gds_path}")
+        return False
+
+    # 将路径转换为字符串并转义特殊字符
+    gds_path_str = str(gds_path).replace("\\", "\\\\").replace('"', '\\"')
+    png_path_str = str(png_path).replace("\\", "\\\\").replace('"', '\\"')
+
     # Prepare optional display config code
     layer_cfg_code = ""
     if layermap:
@@ -32,6 +44,9 @@ def klayout_convert(gds_path: Path, png_path: Path, dpi: int, layermap: str | No
                 ld, color = spec.split(":")
                 layer_s, datatype_s = ld.split("/")
                 color = color.strip()
+                # 验证颜色格式
+                if not color.startswith("#") or len(color) != 7:
+                    continue
                 layer_cfg_code += (
                     "lp = pya.LayerPropertiesNode()\n"
                     f"lp.layer = int({int(layer_s)})\n"
@@ -51,12 +66,14 @@ def klayout_convert(gds_path: Path, png_path: Path, dpi: int, layermap: str | No
 
     bg_code = ""
     if bgcolor:
+        # 验证背景色格式
+        bgcolor = bgcolor.strip()
         bg_code = f"cv.set_config('background-color', '{bgcolor}')\n"
 
     script = f"""
 import pya
 ly = pya.Layout()
-ly.read(r"{gds_path}")
+ly.read(r"{gds_path_str}")
 cv = pya.LayoutView()
 cv.load_layout(ly, 0)
 cv.max_hier_levels = 20
@@ -64,7 +81,7 @@ cv.max_hier_levels = 20
 {line_width_code}
 {layer_cfg_code}
 cv.zoom_fit()
-cv.save_image(r"{png_path}", {dpi}, 0)
+cv.save_image(r"{png_path_str}", {dpi}, 0)
 """
     try:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as tf:
